@@ -1,0 +1,8 @@
+# Fins de ligne normalisées en LF dans le dépôt, natives (CRLF) sous Windows
+* text=auto
+
+# Binaires : jamais de conversion
+*.xlsx binary
+*.xlsm binary
+*.pdf binary
+*.png binary

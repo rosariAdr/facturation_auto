@@ -1,0 +1,25 @@
+{
+  "_commentaire": "Spec d'entrée de scripts/nouvelle_facture.py. Les chemins sont relatifs à la racine de données (PCF_DATA_ROOT). Lancer d'abord avec --dry-run : c'est l'aperçu de l'étape 6 du PCF.",
+
+  "entite": "ROSARI",
+  "ecole": "EPITA",
+  "ecole_label": "EPITA",
+
+  "fichier_sortie": "ROSARI/EPITA/ROSARI_EPITA.xlsx",
+  "onglet": "R_EPITA010 Sept 2026",
+  "n_facture": "R_EPITA010",
+  "date_emission": "2026-09-30",
+
+  "ref_bon_commande": "PO-26-ASSOTA-02001",
+  "masquer_jour": true,
+
+  "lignes": [
+    {
+      "promotion": "AIS S1",
+      "libelle": "[2026][PI][AIS S1][Algorithmic Workshop][98H][S8_25-26][26.06]",
+      "seances": [
+        { "date": "2026-09-15", "heures": 21, "taux": 90 }
+      ]
+    }
+  ]
+}

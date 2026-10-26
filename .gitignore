@@ -1,0 +1,48 @@
+# ─────────────────────────────────────────────
+# .gitignore — facturation_module
+# Ne versionner que le code, la doc et le gabarit vide.
+# Aucune donnée métier, aucune coordonnée, aucun montant.
+# ─────────────────────────────────────────────
+
+# === Données métier ===
+*.xlsx
+*.xlsm
+*.csv
+*.gsheet
+*.pdf
+
+# Exception : le gabarit canonique, vidé de toute coordonnée
+!assets/*.xlsx
+
+# === Dossiers de données, s'ils sont posés ici par commodité ===
+ROSARI/
+KAUR/
+data/
+_archives/
+
+# === Specs de factures réelles (contiennent montants et clients) ===
+*.spec.json
+specs/
+!examples/spec_exemple.json
+
+# === Contexte métier local (écoles, tarifs, coordonnées) ===
+CONTEXT.md
+TASKS.md
+
+# === Sorties de tests ===
+sortie_tests/
+pcf_tests/
+
+# === Python ===
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# === IDE / OS ===
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
