@@ -1,0 +1,27 @@
+name: tests
+
+on:
+  push:
+    branches: [main, develop, "feature/**"]
+  pull_request:
+
+jobs:
+  pytest:
+    name: pytest (${{ matrix.os }}, Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Windows : poste réel des utilisateurs. Ubuntu : contrôle croisé.
+        os: [windows-latest, ubuntu-latest]
+        python: ["3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Installer le paquet et les outils de test
+        run: python -m pip install -e ".[dev]"
+      - name: Lancer la banque de tests
+        # Le rendu PDF (T-FMT-07b) est sauté si LibreOffice est absent du runner.
+        run: python -m pytest
