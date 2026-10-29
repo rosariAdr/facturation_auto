@@ -2,7 +2,8 @@
 
 **Dernière mise à jour** : 2026-09-24
 
-> Source unique du format : `assets/PCF_facture_<ENTITE>.xlsx > MODELE` + `scripts/pcf_format.py`.
+> Source unique du format : `facturation/assets/PCF_facture_standard.xlsx > MODELE` (ou
+> `PCF_facture_<ENTITE>.xlsx` si l'entité a son propre gabarit) + `facturation/pcf_format.py`.
 > Toute spec visuelle écrite ailleurs est obsolète. Faire évoluer le format = modifier
 > le gabarit **et** adapter le module, jamais l'un sans l'autre.
 
@@ -119,13 +120,15 @@ python scripts/build_template.py --source "<...>/ROSARI_DOR.xlsx" --onglet "DOR0
 ```
 
 Le script étend la zone de cours à 60 lignes, trace les encadrés, vide toutes les
-données et neutralise les coordonnées avant d'écrire `assets/PCF_facture_ROSARI.xlsx`.
+données et neutralise les coordonnées avant d'écrire `facturation/assets/PCF_facture_standard.xlsx`.
 
 ---
 
-## Entité KAUR
+## Autres entités (KAUR…)
 
-Le gabarit KAUR n'existe pas : `clone_template(entite="KAUR")` lève
-`NotImplementedError`. Le créer demande une facture KAUR de référence, puis le
-même passage par `build_template.py` avec un `LAYOUT_KAUR` ajouté au module si la
-disposition diffère.
+Depuis la v0.2 (ADR015), toute entité utilise le gabarit standard
+`PCF_facture_standard.xlsx` : seules les informations de l'émetteur changent, et
+elles viennent de son MASTER. Si une entité veut une mise en page différente, on
+dépose `facturation/assets/PCF_facture_<ENTITE>.xlsx` (construit depuis une
+facture de référence avec `build_template.py`) et, si les cellules bougent, on
+déclare son plan dans `LAYOUTS` du module. Le gabarit propre est alors prioritaire.

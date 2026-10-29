@@ -85,13 +85,13 @@ Quand l'utilisateur fournit un PO (EPITA passe par Basware) :
 
 ## Modifier le format
 
-Le format a deux sources et deux seulement : le gabarit `assets/` et le module
-`scripts/pcf_format.py`. Lire [references/FORMAT.md](references/FORMAT.md) avant
+Le format a deux sources et deux seulement : le gabarit `facturation/assets/` et le module
+`facturation/pcf_format.py`. Lire [references/FORMAT.md](references/FORMAT.md) avant
 d'y toucher — il documente le plan des cellules, les invariants (ne jamais
 `delete_rows`) et les pièges vérifiés, dont la fusion `M7:P8` qui fait disparaître
 silencieusement la première ligne d'adresse.
 
-Après toute modification : `python scripts/test_pcf_format.py --data-root "<racine>"`.
+Après toute modification : `python -m pytest` (données fictives, aucune racine requise).
 
 ## Autres références
 

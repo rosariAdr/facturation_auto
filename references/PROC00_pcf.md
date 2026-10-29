@@ -28,7 +28,7 @@ Ne pas tenter d'automatiser les gates humains : ils existent pour éviter les er
 □ Racine de données connue (--data-root ou $PCF_DATA_ROOT)
 □ MASTER de l'entité accessible (cf. MASTER_SCHEMA.md)
 □ Calendrier connecté (gcal access)
-□ Module scripts/pcf_format.py et gabarit assets/ disponibles (cf. FORMAT.md)
+□ Module facturation/pcf_format.py et gabarit facturation/assets/ disponibles (cf. FORMAT.md)
 ```
 
 ---
@@ -143,8 +143,8 @@ SI destinataire vide ou incomplet :
 
 #### 5.1 — Source unique du format
 
-- Gabarit : `assets/PCF_facture_<ENTITE>.xlsx > MODELE`
-- Module : `scripts/pcf_format.py`
+- Gabarit : `facturation/assets/PCF_facture_standard.xlsx > MODELE` (ou `PCF_facture_<ENTITE>.xlsx`)
+- Module : `facturation/pcf_format.py`
 
 **Pas de spec visuelle ailleurs.** Toute évolution du format passe par modification du gabarit + adaptation du module. Détail du plan des cellules et des pièges : [FORMAT.md](FORMAT.md).
 
@@ -154,8 +154,7 @@ Cas courant : écrire une spec JSON et lancer `scripts/nouvelle_facture.py`
 (`--dry-run` produit l'aperçu de l'étape 6). Cas particulier, en Python :
 
 ```python
-import sys; sys.path.insert(0, "scripts")
-import pcf_format as fmt
+from facturation import pcf_format as fmt
 
 fmt.set_data_root(racine)                      # ou $PCF_DATA_ROOT
 

@@ -126,5 +126,5 @@ La numérotation suit `<Initiale entité>_<CODE ÉCOLE><NNN>` : `R_EPITA009`,
 2. Remplir `Coordonnées` : une ligne `Émetteur`, une ligne `Info` par valeur
    (SIRET, IBAN, BIC, TVA), une ligne `Destinataire` par école.
 3. Vérifier : `python scripts/check_coherence.py --entite ROSARI`.
-4. Valider le format : `python scripts/test_pcf_format.py` — le test 2 échoue si
-   `Coordonnées` est incomplet.
+4. Valider l'installation : `facturation profil verifier` — signale un émetteur, un
+   SIRET, un IBAN ou un BIC manquant dans `Coordonnées`.

@@ -306,3 +306,28 @@ Créer `ONBOARDING.md` à la racine = checklist exhaustive A→Z. Phase 1 (colle
 | ADR009 | Conventions horaires formalisées | Acté |
 | ADR010 | Nomenclature .md alignée Loop Breaker | Acté |
 | ADR011 | Onboarding nouveau client formalisé | Acté |
+
+---
+
+## Décisions suivantes (v2, à partir du 26/10/2026)
+
+Les ADR012 et suivants sont tenus dans le journal de décisions du second cerveau
+Notion « Facturation automatique », même format (contexte → décision →
+conséquences). Index au 29/10/2026 :
+
+| # | Sujet | Statut |
+|---|---|---|
+| ADR012 | Exécution par le code, pas par MCP | Acté |
+| ADR013 | Fichiers plats : ni base de données ni serveur | Acté |
+| ADR014 | Multi-utilisateur par configuration (remplace ADR008) | Acté |
+| ADR015 | Gabarit unique par entité + règles par école | Acté |
+| ADR016 | Rapprochement agenda : code, sinon table Correspondances (reprend ADR009) | Acté |
+| ADR017 | Lancement en fin de mois | Remplacé par ADR024 |
+| ADR018 | Ordre de livraison : moteur, appli, Parv | Acté |
+| ADR019 | Lecture de l'agenda par adresse iCal secrète | Proposé |
+| ADR020 | Appli du lot 2 : appli web locale empaquetée en .exe | Proposé |
+| ADR021 | PDF par LibreOffice sans interface | Proposé |
+| ADR022 | Documentation : Notion pour piloter, le dépôt pour la référence technique | Acté |
+| ADR023 | Tests : pytest, Playwright et banque de tests documentée | Acté |
+| ADR024 | Lancement le 25 sur le mois entier, émission au 1er du mois suivant | Acté |
+
