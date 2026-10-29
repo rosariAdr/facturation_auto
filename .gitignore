@@ -1,5 +1,5 @@
 # ─────────────────────────────────────────────
-# .gitignore — facturation_module
+# .gitignore — facturation_auto
 # Ne versionner que le code, la doc et le gabarit vide.
 # Aucune donnée métier, aucune coordonnée, aucun montant.
 # ─────────────────────────────────────────────
@@ -28,6 +28,14 @@ specs/
 # === Contexte métier local (écoles, tarifs, coordonnées) ===
 CONTEXT.md
 TASKS.md
+
+# === Espace de travail local posé à la racine du clone ===
+# Mémoire de travail de Claude, tableau de bord, archives : personnes,
+# écoles et contacts réels, donc jamais versionnés.
+/CLAUDE.md
+/dashboard.html
+/memory/
+*.zip
 
 # === Profils et secrets utilisateur (adresse iCal, jetons) ===
 profil.toml
