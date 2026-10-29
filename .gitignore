@@ -1,23 +1,41 @@
 # ─────────────────────────────────────────────
 # .gitignore — facturation_auto
-# Ne versionner que le code, la doc et le gabarit vide.
-# Aucune donnée métier, aucune coordonnée, aucun montant.
+# Ne versionner que le code, la doc, les exemples fictifs et le gabarit vide.
+# Aucune donnée métier, aucune coordonnée, aucun montant, aucun secret.
 # ─────────────────────────────────────────────
 
-# === Données métier ===
+# === Données métier : classeurs, factures, exports ===
 *.xlsx
 *.xlsm
+*.xls
+*.ods
 *.csv
 *.gsheet
 *.pdf
+*.doc
+*.docx
+*.odt
+# Export de l'agenda (contient tous les cours)
+*.ics
+*.ical
+# Emails enregistrés (brouillons de facture, pièces jointes)
+*.eml
+*.msg
 
 # Exception : le gabarit standard, vidé de toute coordonnée
 !facturation/assets/*.xlsx
 
+# === Fichiers de verrou d'Excel et de LibreOffice (classeur ouvert) ===
+~$*
+.~lock.*#
+
 # === Dossiers de données, s'ils sont posés ici par commodité ===
+# (un dossier par entité, et les sorties d'un lancement)
 ROSARI/
 KAUR/
+DEMO/
 data/
+_sorties/
 _archives/
 
 # === Specs de factures réelles (contiennent montants et clients) ===
@@ -30,37 +48,88 @@ CONTEXT.md
 TASKS.md
 
 # === Espace de travail local posé à la racine du clone ===
-# Mémoire de travail de Claude, tableau de bord, archives : personnes,
-# écoles et contacts réels, donc jamais versionnés.
+# Mémoire de travail de Claude, tableau de bord : personnes, écoles et
+# contacts réels, donc jamais versionnés.
 /CLAUDE.md
+CLAUDE.local.md
 /dashboard.html
 /memory/
-*.zip
+.claude/settings.local.json
 
-# === Profils et secrets utilisateur (adresse iCal, jetons) ===
+# === Archives ===
+*.zip
+*.7z
+*.rar
+
+# === Profils et secrets utilisateur (adresse iCal, jetons, clés) ===
 profil.toml
 *.secret
 token*.json
+credentials*.json
+client_secret*.json
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
 !examples/profil_exemple.toml
+
+# === Journaux (peuvent citer écoles et montants) ===
+*.log
+logs/
 
 # === Sorties de tests ===
 sortie_tests/
 pcf_tests/
-
-# === Python ===
 .pytest_cache/
 .coverage
-build/
-dist/
+.coverage.*
+coverage.xml
+htmlcov/
+.hypothesis/
+# Playwright (lot 2)
+test-results/
+playwright-report/
+playwright/.cache/
+
+# === Python ===
 __pycache__/
 *.py[cod]
 .venv/
 venv/
+env/
 *.egg-info/
+*.egg
+.eggs/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+.ipynb_checkpoints/
 
-# === IDE / OS ===
+# === Construction de l'exécutable (lot 2) ===
+build/
+dist/
+*.exe
+*.msi
+node_modules/
+
+# === IDE ===
 .vscode/
 .idea/
-.DS_Store
-Thumbs.db
+.vs/
+*.code-workspace
 *.swp
+
+# === Windows, macOS, Google Drive ===
+Thumbs.db
+ehthumbs.db
+desktop.ini
+$RECYCLE.BIN/
+*.lnk
+*.tmp
+.tmp.drivedownload/
+.tmp.driveupload/
+.DS_Store
+._*
