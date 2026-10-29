@@ -134,8 +134,8 @@ def _verifier_agenda(profil: Profil) -> list[Constat]:
     if fichier is None:
         return [Constat(
             ATTENTION, "Agenda",
-            "aucun fichier d'adresse iCal secrète déclaré ([agenda] fichier_url_secrete) : "
-            "nécessaire à partir du lot 1",
+            "aucune adresse iCal secrète déclarée : lancez `facturation profil agenda` "
+            "(nécessaire à partir du lot 1)",
         )]
     if not fichier.is_file():
         return [Constat(ATTENTION, "Agenda", f"fichier d'adresse iCal introuvable : {fichier}")]

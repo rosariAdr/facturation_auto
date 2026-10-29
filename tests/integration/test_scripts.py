@@ -100,3 +100,34 @@ def test_profil_init_refuse_d_ecraser(tmp_path):
     assert _lancer(*args).returncode == 0
     second = _lancer(*args)
     assert second.returncode == 1 and "--force" in second.stderr
+
+
+ADRESSE_FICTIVE = "https://calendar.google.com/calendar/ical/demo%40example.org/private-0000/basic.ics"
+
+
+def test_t_cfg_02_enregistrer_adresse_ical(tmp_path):
+    """T-CFG-02 — `profil agenda` range l'adresse hors du profil et la déclare ; verifier la voit."""
+    racine = tmp_path / "donnees"
+    creer_master(racine)
+    profil = tmp_path / "profil.toml"
+    profil.write_text(config.rediger("Personne A", "ROSARI", str(racine)), encoding="utf-8")
+    res = _lancer("-m", "facturation", "profil", "agenda", "--profil", str(profil), "--adresse", ADRESSE_FICTIVE)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert (tmp_path / "agenda.secret").read_text(encoding="utf-8").strip() == ADRESSE_FICTIVE
+    assert ADRESSE_FICTIVE not in profil.read_text(encoding="utf-8")
+    assert config.charger(profil).agenda_fichier_url_secrete == tmp_path / "agenda.secret"
+    verif = _lancer("-m", "facturation", "profil", "verifier", "--profil", str(profil))
+    assert "[OK]        Agenda" in verif.stdout
+    assert ADRESSE_FICTIVE not in verif.stdout
+
+
+def test_t_cfg_03_adresse_ical_invalide_refusee(tmp_path):
+    """T-CFG-03 — une adresse qui n'est pas un lien .ics est refusée, rien n'est écrit."""
+    profil = tmp_path / "profil.toml"
+    profil.write_text(config.rediger("Personne A", "ROSARI", str(tmp_path)), encoding="utf-8")
+    avant = profil.read_text(encoding="utf-8")
+    res = _lancer("-m", "facturation", "profil", "agenda", "--profil", str(profil),
+                  "--adresse", "https://calendar.google.com/calendar/u/0/r")
+    assert res.returncode == 1 and "adresse iCal invalide" in res.stderr
+    assert not (tmp_path / "agenda.secret").exists()
+    assert profil.read_text(encoding="utf-8") == avant

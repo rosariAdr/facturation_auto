@@ -19,7 +19,7 @@ racine = "C:/Donnees/Factures"
 
 [lancement]
 jour = 25                         # prépare tout le mois en cours (ADR024)
-heure = "20:00"
+heure = "16:00"
 date_emission = "premier_du_mois_suivant"
 
 [pdf]

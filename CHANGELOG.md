@@ -8,7 +8,9 @@ Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/). Versions : `0
 - Paquet Python installable `facturation-auto` (`pyproject.toml`) et commande `facturation`.
 - Profil par utilisateur en TOML hors dépôt (`facturation/config.py`) : entité, agenda, racine de données, lancement (25 du mois par défaut), moteur PDF ; validation champ par champ.
 - `facturation profil init`, `facturation profil chemin`, `facturation profil verifier` (contrôles de l'installation, sans écriture).
-- Banque de tests pytest sur données fictives : format (T-FMT-01 à 07), profil (T-CFG-01…), scripts et vérification (T-CLI-01/02, T-COH-01, T-VER-01/02).
+- `facturation profil agenda` : enregistre l'adresse iCal secrète dans `agenda.secret`, à côté du profil, saisie sans affichage (ADR019).
+- Heure de lancement par défaut : 16 h le 25 du mois (Q6).
+- Banque de tests pytest sur données fictives : format (T-FMT-01 à 07), profil (T-CFG-01…), scripts et vérification (T-CLI-01/02, T-COH-01, T-VER-01/02, T-CFG-02/03).
 - Intégration continue GitHub Actions (Windows et Ubuntu).
 - `examples/profil_exemple.toml`, `CHANGELOG.md`.
 

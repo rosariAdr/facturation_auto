@@ -36,7 +36,7 @@ DATES_EMISSION = ("premier_du_mois_suivant",)
 # Valeurs par défaut validées au cadrage (ADR024 : lancement le 25, émission au 1er).
 DEFAUTS = {
     "agenda": {"source": "ical", "fuseau": "Europe/Paris"},
-    "lancement": {"jour": 25, "heure": "20:00", "date_emission": "premier_du_mois_suivant"},
+    "lancement": {"jour": 25, "heure": "16:00", "date_emission": "premier_du_mois_suivant"},
     "pdf": {"moteur": "libreoffice"},
 }
 
@@ -206,7 +206,7 @@ def valider(brut: dict[str, Any], chemin: Path) -> Profil:
 
     heure = lire("lancement", "heure")
     if not isinstance(heure, str) or not _HEURE_RE.match(heure):
-        erreurs.append(f"[lancement] heure : {heure!r} invalide, attendu HH:MM (ex. 20:00)")
+        erreurs.append(f"[lancement] heure : {heure!r} invalide, attendu HH:MM (ex. 16:00)")
 
     date_emission = lire("lancement", "date_emission")
     if date_emission not in DATES_EMISSION:
@@ -265,6 +265,51 @@ def resoudre_racine(
     return None
 
 
+NOM_FICHIER_ICAL = "agenda.secret"
+_ICAL_RE = re.compile(r"^https://\S+\.ics$")
+_LIGNE_ICAL_RE = re.compile(r"^#?\s*fichier_url_secrete\s*=.*$", re.MULTILINE)
+
+
+def adresse_ical_valide(adresse: str) -> bool:
+    """Forme attendue d'une adresse iCal : https://….ics, sans espace."""
+    return bool(_ICAL_RE.match(adresse.strip()))
+
+
+def enregistrer_adresse_ical(profil: Profil, adresse: str) -> Path:
+    """Range l'adresse iCal secrète à côté du profil et la déclare dans le profil.
+
+    L'adresse est écrite dans `agenda.secret` (jamais dans le profil lui-même ni
+    dans le dépôt), puis la ligne `fichier_url_secrete` du profil est activée.
+
+    Returns:
+        Le chemin du fichier secret.
+
+    Raises:
+        ValueError: adresse mal formée.
+        ProfilInvalide: le profil modifié ne se relit plus (cas anormal).
+    """
+    adresse = adresse.strip()
+    if not adresse_ical_valide(adresse):
+        raise ValueError(
+            "adresse iCal invalide : elle doit commencer par https:// et finir par .ics "
+            "(Google Agenda → Paramètres et partage → Adresse secrète au format iCal)"
+        )
+    secret = profil.chemin.parent / NOM_FICHIER_ICAL
+    secret.write_text(adresse + "\n", encoding="utf-8")
+
+    texte = profil.chemin.read_text(encoding="utf-8")
+    ligne = f'fichier_url_secrete = "{NOM_FICHIER_ICAL}"'
+    if _LIGNE_ICAL_RE.search(texte):
+        texte = _LIGNE_ICAL_RE.sub(ligne, texte, count=1)
+    elif re.search(r"^\[agenda\]\s*$", texte, re.MULTILINE):
+        texte = re.sub(r"^\[agenda\]\s*$", f"[agenda]\n{ligne}", texte, count=1, flags=re.MULTILINE)
+    else:
+        texte = texte.rstrip() + f"\n\n[agenda]\n{ligne}\n"
+    profil.chemin.write_text(texte, encoding="utf-8")
+    charger(profil.chemin)  # le profil doit rester valide
+    return secret
+
+
 def _texte_toml(valeur: str) -> str:
     """Chaîne TOML entre guillemets, avec échappement des caractères spéciaux."""
     return '"' + valeur.replace("\\", "\\\\").replace('"', '\\"') + '"'
@@ -293,7 +338,7 @@ racine = {_texte_toml(racine_posix)}
 
 [lancement]
 jour = 25                        # prépare tout le mois en cours (ADR024)
-heure = "20:00"
+heure = "16:00"                  # heure du lancement le 25 (Q6)
 date_emission = "premier_du_mois_suivant"
 
 [pdf]

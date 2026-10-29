@@ -4,6 +4,7 @@ Lot 0 :
     facturation profil chemin                      # où le profil est cherché
     facturation profil init --nom … --entite … --racine …
     facturation profil verifier [--profil CHEMIN]
+    facturation profil agenda [--profil CHEMIN]    # enregistre l'adresse iCal secrète
 
 Les commandes `preparer`, `emettre`, `audit` et `classer` arrivent au lot 1.
 """
@@ -11,6 +12,7 @@ Les commandes `preparer`, `emettre`, `audit` et `classer` arrivent au lot 1.
 from __future__ import annotations
 
 import argparse
+import getpass
 import sys
 from pathlib import Path
 
@@ -42,6 +44,14 @@ def _parser() -> argparse.ArgumentParser:
 
     verif = actions.add_parser("verifier", help="Contrôler le profil, les données et les outils")
     verif.add_argument("--profil", type=Path, default=None, help="Profil à utiliser (défaut : emplacement standard)")
+
+    agenda = actions.add_parser("agenda", help="Enregistrer l'adresse iCal secrète de l'agenda de cours")
+    agenda.add_argument("--profil", type=Path, default=None, help="Profil à utiliser (défaut : emplacement standard)")
+    agenda.add_argument(
+        "--adresse", default=None,
+        help="Adresse iCal secrète (déconseillé : elle reste dans l'historique du terminal ; "
+             "sans cette option, elle est demandée sans s'afficher)",
+    )
     return parser
 
 
@@ -81,6 +91,30 @@ def _profil_verifier(args: argparse.Namespace) -> int:
     return 1 if n_erreurs else 0
 
 
+def _profil_agenda(args: argparse.Namespace) -> int:
+    try:
+        profil = config.charger(args.profil)
+    except config.ProfilInvalide as exc:
+        print(f"{_ETIQUETTES[ERREUR]}Profil — {exc}", file=sys.stderr)
+        return 1
+    adresse = args.adresse
+    if adresse is None:
+        print(
+            "Dans Google Agenda (navigateur) : survolez l'agenda de cours dans la colonne de gauche,\n"
+            "cliquez sur les trois points, puis « Paramètres et partage », et copiez\n"
+            "« Adresse secrète au format iCal ».",
+        )
+        adresse = getpass.getpass("Collez l'adresse (elle ne s'affiche pas), puis Entrée : ")
+    try:
+        secret = config.enregistrer_adresse_ical(profil, adresse)
+    except ValueError as exc:
+        print(f"{_ETIQUETTES[ERREUR]}Agenda — {exc}", file=sys.stderr)
+        return 1
+    print(f"Adresse enregistrée dans {secret} (hors dépôt) et déclarée dans {profil.chemin}.")
+    print("Contrôlez avec : facturation profil verifier")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     # Une console Windows redirigée (tâche planifiée) peut ne pas être en UTF-8.
     for flux in (sys.stdout, sys.stderr):
@@ -94,6 +128,8 @@ def main(argv: list[str] | None = None) -> int:
             return _profil_init(args)
         if args.action == "verifier":
             return _profil_verifier(args)
+        if args.action == "agenda":
+            return _profil_agenda(args)
     return 2
 
 

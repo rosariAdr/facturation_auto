@@ -63,15 +63,21 @@ ailleurs, ou le chemin de `FACTURATION_PROFIL`).
 
 ```bash
 facturation profil init --nom "Prénom Nom" --entite ROSARI --racine "G:/Mon Drive/Factures"
+facturation profil agenda      # colle l'adresse iCal secrète, sans l'afficher
 facturation profil verifier
 ```
+
+L'adresse iCal secrète se trouve dans Google Agenda (navigateur) : survoler l'agenda
+de cours dans la colonne de gauche, cliquer sur les trois points, « Paramètres et
+partage », puis copier « Adresse secrète au format iCal ». `profil agenda` la range
+dans `agenda.secret`, à côté du profil, jamais dans le dépôt.
 
 `verifier` contrôle sans rien écrire : présence du dossier de données et du MASTER,
 onglets, coordonnées de l'émetteur, destinataires incomplets, gabarit, adresse iCal
 secrète (jamais affichée), LibreOffice. Code de retour 1 en cas d'erreur bloquante.
 Exemple commenté : [examples/profil_exemple.toml](examples/profil_exemple.toml).
 
-Valeurs par défaut issues du cadrage : lancement le 25 du mois sur le mois en cours,
+Valeurs par défaut issues du cadrage : lancement le 25 du mois à 16 h sur le mois en cours,
 factures datées du 1er du mois suivant, agenda lu par adresse iCal, PDF par LibreOffice.
 
 ## Racine de données

@@ -43,7 +43,7 @@ def test_valeurs_par_defaut_du_cadrage(tmp_path):
     """ADR024 — lancement le 25, émission au 1er du mois suivant, iCal, LibreOffice."""
     p = config.charger(_ecrire(tmp_path, MINIMAL.format(entite="ROSARI", racine="/donnees")))
     assert p.lancement_jour == 25
-    assert p.lancement_heure == "20:00"
+    assert p.lancement_heure == "16:00"
     assert p.date_emission == "premier_du_mois_suivant"
     assert p.agenda_source == "ical"
     assert p.fuseau == "Europe/Paris"

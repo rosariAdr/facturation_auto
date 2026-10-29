@@ -324,9 +324,9 @@ conséquences). Index au 29/10/2026 :
 | ADR016 | Rapprochement agenda : code, sinon table Correspondances (reprend ADR009) | Acté |
 | ADR017 | Lancement en fin de mois | Remplacé par ADR024 |
 | ADR018 | Ordre de livraison : moteur, appli, Parv | Acté |
-| ADR019 | Lecture de l'agenda par adresse iCal secrète | Proposé |
-| ADR020 | Appli du lot 2 : appli web locale empaquetée en .exe | Proposé |
-| ADR021 | PDF par LibreOffice sans interface | Proposé |
+| ADR019 | Lecture de l'agenda par adresse iCal secrète | Acté (29/10/2026) |
+| ADR020 | Appli du lot 2 : appli web locale empaquetée en .exe | Acté (29/10/2026) |
+| ADR021 | PDF par LibreOffice sans interface | Acté (29/10/2026) |
 | ADR022 | Documentation : Notion pour piloter, le dépôt pour la référence technique | Acté |
 | ADR023 | Tests : pytest, Playwright et banque de tests documentée | Acté |
 | ADR024 | Lancement le 25 sur le mois entier, émission au 1er du mois suivant | Acté |
