@@ -15,8 +15,11 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import pcf_format as fmt
+try:
+    from facturation import config, pcf_format as fmt
+except ModuleNotFoundError:  # exécution depuis le dépôt sans installation
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from facturation import config, pcf_format as fmt
 
 # MASTER.Cours : École | Module | Classe | Vol contrac | H dispensées |
 #                H facturées | H à facturer | N° Facture liée | N° Devis lié | Statut
@@ -99,7 +102,10 @@ def afficher_sessions(ws, ecoles: list):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--entite", default="ROSARI", choices=["ROSARI", "KAUR"])
+    parser.add_argument(
+        "--entite", default=None,
+        help="Code de l'entité (défaut : celle du profil, sinon ROSARI)",
+    )
     parser.add_argument(
         "--ecole", nargs="*", default=[],
         help="Filtre sur une ou plusieurs écoles (défaut : toutes)",
@@ -109,17 +115,21 @@ def main():
         help="Affiche aussi le récapitulatif MASTER.Sessions par facture",
     )
     parser.add_argument("--data-root", type=Path, default=None)
+    parser.add_argument(
+        "--profil", type=Path, default=None,
+        help="Profil utilisateur (défaut : profil standard s'il existe)",
+    )
     args = parser.parse_args()
 
-    if args.data_root:
-        fmt.set_data_root(args.data_root)
+    profil = config.resoudre_racine(args.data_root, args.profil)
+    entite = args.entite or (profil.entite if profil else "ROSARI")
 
-    master = fmt._master_path_for(args.entite)
+    master = fmt._master_path_for(entite)
     if not master.exists():
         raise SystemExit(
             f"MASTER introuvable : {master}\n"
             f"Racine de données : {fmt.get_data_root()} "
-            "(--data-root ou $PCF_DATA_ROOT)"
+            "(--data-root, --profil ou $PCF_DATA_ROOT)"
         )
     print(f"MASTER : {master}\n")
     wb = load_workbook(master, data_only=True)

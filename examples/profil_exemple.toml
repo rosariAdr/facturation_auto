@@ -1,0 +1,26 @@
+# Exemple de profil de facturation — valeurs fictives.
+# Le vrai profil se crée avec :  facturation profil init --nom … --entite … --racine …
+# Il vit hors du dépôt (%APPDATA%\facturation\profil.toml sous Windows) et ne se versionne pas.
+
+[utilisateur]
+nom = "Personne Fictive"
+entite = "DEMO"                   # code de l'entité : majuscules, 2 à 16 caractères
+# prefixe_facture = "D_"          # par défaut : initiale de l'entité + « _ »
+
+[agenda]
+source = "ical"                   # "ical" (adresse secrète) ou "api" (Google Agenda, en option)
+fichier_url_secrete = "agenda.secret"   # fichier séparé contenant l'adresse iCal secrète
+fuseau = "Europe/Paris"
+
+[donnees]
+# Dossier qui contient DEMO/DEMO_MASTER.xlsx. Sous Windows, préférer les barres
+# obliques : "G:/Mon Drive/Factures".
+racine = "C:/Donnees/Factures"
+
+[lancement]
+jour = 25                         # prépare tout le mois en cours (ADR024)
+heure = "20:00"
+date_emission = "premier_du_mois_suivant"
+
+[pdf]
+moteur = "libreoffice"            # ou "excel" (en option, pas encore disponible)

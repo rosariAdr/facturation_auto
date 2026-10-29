@@ -11,8 +11,8 @@
 *.gsheet
 *.pdf
 
-# Exception : le gabarit canonique, vidé de toute coordonnée
-!assets/*.xlsx
+# Exception : le gabarit standard, vidé de toute coordonnée
+!facturation/assets/*.xlsx
 
 # === Dossiers de données, s'ils sont posés ici par commodité ===
 ROSARI/
@@ -29,11 +29,21 @@ specs/
 CONTEXT.md
 TASKS.md
 
+# === Profils et secrets utilisateur (adresse iCal, jetons) ===
+profil.toml
+*.secret
+token*.json
+!examples/profil_exemple.toml
+
 # === Sorties de tests ===
 sortie_tests/
 pcf_tests/
 
 # === Python ===
+.pytest_cache/
+.coverage
+build/
+dist/
 __pycache__/
 *.py[cod]
 .venv/

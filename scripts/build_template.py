@@ -1,10 +1,10 @@
 """build_template.py — Reconstruit le gabarit canonique ROSARI depuis une facture.
 
 Source : une facture existante servant de référence visuelle (READ-ONLY).
-Sortie : assets/PCF_facture_ROSARI.xlsx > MODELE.
+Sortie : facturation/assets/PCF_facture_standard.xlsx > MODELE.
 
 Script de maintenance : à relancer seulement pour refondre le gabarit. En usage
-courant, le gabarit livré dans assets/ suffit.
+courant, le gabarit livré dans facturation/assets/ suffit.
 
 Modifications apportées vs la facture source :
 - Étend la zone cours de 7 → 60 rows (insert 53 rows entre row 26 et row 27)
@@ -30,7 +30,7 @@ from openpyxl.cell.cell import MergedCell
 from openpyxl.styles import Border, Side
 
 PACKAGE_ROOT = Path(__file__).resolve().parent.parent
-DST_FILE = PACKAGE_ROOT / "assets" / "PCF_facture_ROSARI.xlsx"
+DST_FILE = PACKAGE_ROOT / "facturation" / "assets" / "PCF_facture_standard.xlsx"
 
 # Renseignées par main() depuis les arguments de la ligne de commande
 SRC_FILE: Path

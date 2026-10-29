@@ -1,15 +1,18 @@
 """pcf_format.py — Module canonique de mise en forme des factures.
 
-Source unique du format : ce module + assets/PCF_facture_<ENTITE>.xlsx > MODELE.
+Source unique du format : ce module + le gabarit `facturation/assets/` > MODELE.
 Toute spec visuelle ailleurs est obsolète (cf. references/FORMAT.md).
 
 Usage : voir references/PROC00_pcf.md étape 5.2.
 
-NOTE : ROSARI uniquement pour l'instant. KAUR nécessite son propre gabarit.
+Gabarit (ADR015) : une mise en page unique, `PCF_facture_standard.xlsx`, vide de
+toute coordonnée ; seules les informations de l'émetteur changent d'une entité à
+l'autre. Une entité peut avoir son propre gabarit `PCF_facture_<ENTITE>.xlsx`,
+prioritaire s'il existe.
 
 Source des données :
 - Coordonnées émetteur, destinataires : `MASTER.Coordonnées` (Type=Émetteur/Destinataire)
-- SIRET, IBAN, BIC, TVA : `MASTER.Coordonnées` (Type=Info, Code=ROSARI/KAUR)
+- SIRET, IBAN, BIC, TVA : `MASTER.Coordonnées` (Type=Info, Code=<ENTITE>)
 - Aucune duplication de données dans ce module — tout est lu depuis MASTER au runtime.
   Le gabarit versionné est volontairement vide de toute coordonnée : elles sont
   injectées par apply_emetteur / apply_metadata / apply_rib.
@@ -22,6 +25,7 @@ La racine de données doit contenir `<ENTITE>/<ENTITE>_MASTER.xlsx`.
 """
 
 import os
+import re
 from copy import copy as _copy
 from datetime import date
 from pathlib import Path
@@ -38,13 +42,36 @@ from openpyxl.worksheet.worksheet import Worksheet
 # Chemins
 # ──────────────────────────────────────────────────────────────────────
 
-PACKAGE_ROOT = Path(__file__).resolve().parent.parent  # facturation_module/
-ASSETS = PACKAGE_ROOT / "assets"
+ASSETS = Path(__file__).resolve().parent / "assets"
+GABARIT_STANDARD = ASSETS / "PCF_facture_standard.xlsx"
 
-TEMPLATE_ROSARI = ASSETS / "PCF_facture_ROSARI.xlsx"
-TEMPLATE_KAUR = ASSETS / "PCF_facture_KAUR.xlsx"  # gabarit à créer
+# Code d'entité : majuscules et chiffres, 2 à 16 caractères (ex. ROSARI, KAUR).
+_ENTITE_RE = re.compile(r"^[A-Z][A-Z0-9]{1,15}$")
 
 _DATA_ROOT: Optional[Path] = None
+
+
+def valider_entite(entite: str) -> str:
+    """Vérifie le format d'un code d'entité et le renvoie.
+
+    Raises:
+        ValueError: si le code n'est pas en majuscules (2 à 16 caractères) ou
+            s'il vaut STANDARD, réservé au gabarit commun.
+    """
+    if not isinstance(entite, str) or not _ENTITE_RE.match(entite):
+        raise ValueError(
+            f"Code d'entité invalide : {entite!r}. Attendu : majuscules et "
+            "chiffres, 2 à 16 caractères (ex. ROSARI, KAUR)."
+        )
+    if entite == "STANDARD":
+        raise ValueError("Le code d'entité STANDARD est réservé au gabarit commun.")
+    return entite
+
+
+def gabarit_pour(entite: str) -> Path:
+    """Gabarit à utiliser pour une entité : le sien s'il existe, sinon le standard."""
+    propre = ASSETS / f"PCF_facture_{valider_entite(entite)}.xlsx"
+    return propre if propre.exists() else GABARIT_STANDARD
 
 
 def set_data_root(chemin) -> Path:
@@ -80,8 +107,7 @@ _MASTER_DATA_CACHE: dict = {}
 
 def _master_path_for(entite: str) -> Path:
     """Retourne le chemin du MASTER de l'entité, sous la racine de données."""
-    if entite not in ("ROSARI", "KAUR"):
-        raise ValueError(f"Entité inconnue : {entite}. Attendu : 'ROSARI' ou 'KAUR'.")
+    valider_entite(entite)
     return get_data_root() / entite / f"{entite}_MASTER.xlsx"
 
 
@@ -187,7 +213,9 @@ def get_destinataire(code_ecole: str, entite: str = "ROSARI") -> Optional[dict]:
     data = _load_master_data(entite)
     return data["destinataires"].get(code_ecole)
 
-LAYOUT_ROSARI = {
+
+# Plan des cellules du gabarit standard, commun à toutes les entités (ADR015).
+LAYOUT_STANDARD = {
     "bandeau_row": 2,
     "emetteur_rows": (7, 11),
     "emetteur_col": 3,  # C
@@ -217,6 +245,11 @@ LAYOUT_ROSARI = {
     "rib_bic_cell": "D89",
     "derniere_ligne_utile": 93,  # mentions légales → borne du print_area
 }
+
+LAYOUT_ROSARI = LAYOUT_STANDARD  # nom historique, conservé pour les scripts existants
+
+# Plans propres à une entité dont le gabarit diffère du standard (aucun pour l'instant).
+LAYOUTS: dict = {}
 
 THIN = Side(style="thin", color="000000")
 
@@ -316,14 +349,8 @@ def _xworkbook_clone_modele(
 
 
 def _layout_for(entite: str) -> dict:
-    """Retourne le layout selon l'entité (ROSARI ou KAUR)."""
-    if entite == "ROSARI":
-        return LAYOUT_ROSARI
-    if entite == "KAUR":
-        raise NotImplementedError(
-            "Template KAUR à créer en itération 2 (cf. FMT01)."
-        )
-    raise ValueError(f"Entité inconnue : {entite}. Attendu : 'ROSARI' ou 'KAUR'.")
+    """Plan des cellules de l'entité : le sien s'il est déclaré, sinon le standard."""
+    return LAYOUTS.get(valider_entite(entite), LAYOUT_STANDARD)
 
 
 def _emetteur_for(entite: str) -> dict:
@@ -355,23 +382,18 @@ def clone_template(
     Args:
         dst_wb: workbook de destination (doit déjà exister, peut être vide ou avoir d'autres sheets).
         sheet_name: nom de la nouvelle feuille (ex. "R_DOR001 Mars 2026").
-        entite: "ROSARI" ou "KAUR".
+        entite: code de l'entité (ex. "ROSARI").
 
     Returns:
         Le nouveau worksheet, prêt à recevoir les données via les autres fonctions.
     """
-    if entite == "ROSARI":
-        if not TEMPLATE_ROSARI.exists():
-            raise FileNotFoundError(
-                f"Gabarit introuvable : {TEMPLATE_ROSARI}. "
-                "Le régénérer avec scripts/build_template.py."
-            )
-        return _xworkbook_clone_modele(TEMPLATE_ROSARI, dst_wb, sheet_name)
-    if entite == "KAUR":
-        raise NotImplementedError(
-            "Gabarit KAUR à créer (cf. references/FORMAT.md)."
+    gabarit = gabarit_pour(entite)
+    if not gabarit.exists():
+        raise FileNotFoundError(
+            f"Gabarit introuvable : {gabarit}. "
+            "Le régénérer avec scripts/build_template.py."
         )
-    raise ValueError(f"Entité inconnue : {entite}.")
+    return _xworkbook_clone_modele(gabarit, dst_wb, sheet_name)
 
 
 def apply_emetteur(ws: Worksheet, entite: str = "ROSARI"):

@@ -19,8 +19,11 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
-import pcf_format as fmt
+try:
+    from facturation import pcf_format as fmt
+except ModuleNotFoundError:  # exécution depuis le dépôt sans installation
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from facturation import pcf_format as fmt
 
 # Racine des données : $PCF_DATA_ROOT, ou dossier courant. Ne jamais coder en dur
 # un chemin de données dans un script versionné.

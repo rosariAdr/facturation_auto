@@ -35,8 +35,11 @@ from pathlib import Path
 
 from openpyxl import Workbook, load_workbook
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import pcf_format as fmt
+try:
+    from facturation import config, pcf_format as fmt
+except ModuleNotFoundError:  # exécution depuis le dépôt sans installation
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from facturation import config, pcf_format as fmt
 
 
 def _parse_date(valeur) -> date:
@@ -172,7 +175,13 @@ def main():
         "--data-root",
         type=Path,
         default=None,
-        help="Racine des données métier (défaut : $PCF_DATA_ROOT ou dossier courant)",
+        help="Racine des données métier (défaut : profil, $PCF_DATA_ROOT ou dossier courant)",
+    )
+    parser.add_argument(
+        "--profil",
+        type=Path,
+        default=None,
+        help="Profil utilisateur (défaut : profil standard s'il existe)",
     )
     parser.add_argument(
         "--dry-run",
@@ -181,8 +190,7 @@ def main():
     )
     args = parser.parse_args()
 
-    if args.data_root:
-        fmt.set_data_root(args.data_root)
+    config.resoudre_racine(args.data_root, args.profil)
     print(f"Racine de données : {fmt.get_data_root()}")
 
     generer(charger_spec(args.spec), dry_run=args.dry_run)
