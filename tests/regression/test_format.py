@@ -1,4 +1,4 @@
-"""Non-régression du format des factures (banque de tests : T-FMT-01 à T-FMT-07).
+"""Non-régression du format des factures (banque de tests : T-FMT-01 à T-FMT-08).
 
 T-FMT-01 à 06 reprennent les tests de la v1 (`scripts/test_pcf_format.py`), sur un
 MASTER fictif. T-FMT-07 trace les défauts relevés le 26/10/2026 : marqué xfail
@@ -115,6 +115,64 @@ def test_gabarit_standard_pour_toute_entite(tmp_path):
         fmt.gabarit_pour("rosari")
     with pytest.raises(ValueError):
         fmt.gabarit_pour("STANDARD")
+
+
+def _empreinteur(feuille):
+    """Renvoie une fonction : cellule -> (valeur, police, remplissage, bordure, alignement,
+    format de nombre), comparable d'un classeur à l'autre.
+
+    Les objets de style sont lus dans les tables du classeur (comparaison champ par champ
+    entre classeurs) et mis en cache par style, d'où une comparaison rapide de ~27 000 cellules.
+    """
+    from openpyxl.styles.cell_style import StyleArray
+
+    classeur = feuille.parent
+    cache: dict[tuple, tuple] = {}
+
+    def empreinte(cellule) -> tuple:
+        # openpyxl laisse _style à None sur certaines cellules sans style : style par défaut.
+        s = cellule._style if cellule._style is not None else StyleArray()
+        cle = tuple(s)
+        style = cache.get(cle)
+        if style is None:
+            style = cache[cle] = (
+                classeur._fonts[s.fontId],
+                classeur._fills[s.fillId],
+                classeur._borders[s.borderId],
+                classeur._alignments[s.alignmentId],
+                cellule.number_format,
+            )
+        return (cellule.value, *style)
+
+    return empreinte
+
+
+def test_t_fmt_08_clone_fidele_au_gabarit():
+    """T-FMT-08 — le clone reproduit chaque cellule du gabarit : valeur, police, remplissage,
+    bordure, alignement, format de nombre, fusions, largeurs et hauteurs.
+
+    Garde-fou de l'optimisation du 29/10/2026 : chaque style distinct n'est recopié qu'une
+    fois puis réutilisé, au lieu d'être recopié pour chacune des ~26 800 cellules stylées.
+    """
+    from openpyxl import load_workbook
+
+    source = load_workbook(fmt.GABARIT_STANDARD)["MODELE"]
+    clone = fmt.clone_template(_classeur(), "TEST_FIDELITE", entite="ROSARI")
+    de_la_source, du_clone = _empreinteur(source), _empreinteur(clone)
+    ecarts = [
+        cellule.coordinate
+        for ligne in source.iter_rows()
+        for cellule in ligne
+        if de_la_source(cellule) != du_clone(clone.cell(row=cellule.row, column=cellule.column))
+    ]
+    assert not ecarts, f"{len(ecarts)} cellules diffèrent du gabarit, dont {ecarts[:5]}"
+    assert sorted(map(str, clone.merged_cells.ranges)) == sorted(map(str, source.merged_cells.ranges))
+    assert {k: d.width for k, d in clone.column_dimensions.items() if d.width} == {
+        k: d.width for k, d in source.column_dimensions.items() if d.width
+    }
+    assert {k: d.height for k, d in clone.row_dimensions.items() if d.height} == {
+        k: d.height for k, d in source.row_dimensions.items() if d.height
+    }
 
 
 def _facture_17_seances(racine):
