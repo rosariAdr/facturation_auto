@@ -148,8 +148,10 @@ chaque push sous Windows et Ubuntu. Le rendu PDF est sauté si LibreOffice est a
 
 ## Conventions
 
-- Branches : `main` (stable), `develop` (en cours), `feature/*`.
-- Commits conventionnels : `feat:`, `fix:`, `docs:`, `test:`, `refactor:`, `chore:`.
+Les conventions de travail — branches (`main` / `dev` / `feat|fix|chore/*`), Conventional
+Commits, porte de tests, règles pour les agents — vivent dans [AGENTS.md](AGENTS.md), lu par
+Claude Code et Codex. En bref :
+
 - Aucune donnée réelle dans le dépôt, y compris dans les tests et les exemples.
 - Décisions : ADR001 à ADR011 dans [references/ADR.md](references/ADR.md), les
   suivantes dans le journal de décisions du second cerveau Notion.
