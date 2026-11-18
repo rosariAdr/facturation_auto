@@ -140,7 +140,7 @@ Les règles ci-dessus sont du *contexte* qu'un agent peut ne pas suivre. Pour le
 
 - **Objet** : factures mensuelles d'un formateur indépendant, à partir de son agenda de cours, des tarifs de chaque école et d'un gabarit XLSX. Le protocole **PCF** (7 étapes) garde des **validations humaines aux étapes 1, 4 et 6** — voir `references/PROC00_pcf.md`.
 - **Stack** : Python ≥ 3.11, paquet `facturation-auto` (commande `facturation`), `openpyxl` ; LibreOffice pour le PDF. Installation : `python -m pip install -e ".[dev]"`.
-- **Branche stable** : `main`. `dev` 💡 [à créer depuis `main`]. Ce modèle remplace l'ancien `main` / `develop` / `feature/*`.
+- **Branche stable** : `main`. Intégration sur `dev`, créée depuis `main` le 17 novembre 2026. Ce modèle remplace l'ancien `main` / `develop` / `feature/*` ; `origin/develop`, identique à `main`, ne sert plus.
 - **IDs de ticket** (second cerveau Notion) : `F-xx` fonctionnalité, `T-XXX-NN` test, `ADRxxx` décision, `Qx` question ouverte. Branche : `feat/F-18-gabarit`.
 - **Porte** : `python -m pytest` — toute la banque (marqueurs `unit`, `integration`, `regression`, `e2e`), environ 6 min sur le poste. `xfail_strict` : un défaut connu marqué `xfail` qui se met à passer fait échouer la suite, pour rappeler de retirer le marqueur. `💡 [proposé]` y ajouter `ruff check` + `ruff format --check` derrière un `scripts/porte.py`.
 - **E2E** : Playwright via `pytest-playwright`, marqueur `e2e` déjà déclaré — **à partir du lot 2** (l'appli). Rien d'installé avant.
