@@ -214,6 +214,18 @@ def get_destinataire(code_ecole: str, entite: str = "ROSARI") -> Optional[dict]:
     return data["destinataires"].get(code_ecole)
 
 
+def get_emetteur(*, entite: str) -> dict:
+    """Helper public : retourne l'émetteur de l'entité, lu dans MASTER.Coordonnées.
+
+    Args:
+        entite: code de l'entité, obligatoire et nommé (ADR001).
+
+    Returns:
+        Une copie du dict nom, adresse_l1, adresse_l2, email, tel.
+    """
+    return dict(_emetteur_for(entite))
+
+
 # Plan des cellules du gabarit standard, commun à toutes les entités (ADR015).
 LAYOUT_STANDARD = {
     "bandeau_row": 2,

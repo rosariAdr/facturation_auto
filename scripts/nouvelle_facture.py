@@ -76,25 +76,37 @@ def construire_groupes(lignes: list) -> list:
     return groupes
 
 
-def apercu(spec: dict, groupes: list, dest: dict) -> str:
-    """Construit l'aperçu du PCF étape 6 (gate humain avant écriture)."""
+def apercu(spec: dict, groupes: list, dest: dict, *, emetteur: dict) -> str:
+    """Construit l'aperçu du PCF étape 6 (gate humain avant écriture).
+
+    Le libellé s'affiche en entier (il recopie à l'identique le code produit du bon
+    de commande) ; les colonnes s'élargissent au plus long libellé et à la plus
+    longue promotion (FA-05).
+    """
+    seances_txt = [
+        (d, str(promo), libelle.replace("\n", " "), heures, taux)
+        for promo, libelle, seances in groupes
+        for d, heures, taux in seances
+    ]
+    largeur_promo = max([12, *(len(s[1]) for s in seances_txt)])
+    largeur_libelle = max([0, *(len(s[2]) for s in seances_txt)])
     lignes_txt = []
     total_h = total_eur = 0.0
-    for promo, libelle, seances in groupes:
-        for d, heures, taux in seances:
-            total_h += heures
-            total_eur += heures * taux
-            libelle_court = libelle.replace("\n", " ")[:45]
-            lignes_txt.append(
-                f"  | {d.strftime('%d/%m/%Y')} | {promo:<12} | {libelle_court:<45} "
-                f"| {heures:>5}h | {taux:>6.2f} € | {heures * taux:>9.2f} €"
-            )
+    for d, promo, libelle, heures, taux in seances_txt:
+        total_h += heures
+        total_eur += heures * taux
+        lignes_txt.append(
+            f"  | {d.strftime('%d/%m/%Y')} | {promo:<{largeur_promo}} | {libelle:<{largeur_libelle}} "
+            f"| {heures:>5}h | {taux:>6.2f} € | {heures * taux:>9.2f} €"
+        )
     bc = spec.get("ref_bon_commande") or "—"
     return "\n".join([
         "====== APERÇU FACTURE ======",
         f"Entité        : {spec['entite']}",
         f"N°            : {spec['n_facture']}",
         f"Date émission : {_parse_date(spec['date_emission']).strftime('%d/%m/%Y')}",
+        f"Émetteur      : {emetteur['nom']} — {emetteur.get('adresse_l1', '')}, "
+        f"{emetteur.get('adresse_l2', '')}",
         f"Destinataire  : {dest['nom']} — {dest.get('adresse_l1', '')}, "
         f"{dest.get('adresse_l2', '')}",
         f"Bon de commande : {bc}",
@@ -121,7 +133,7 @@ def generer(spec: dict, dry_run: bool = False) -> dict:
         )
 
     groupes = construire_groupes(spec["lignes"])
-    print(apercu(spec, groupes, dest))
+    print(apercu(spec, groupes, dest, emetteur=fmt.get_emetteur(entite=entite)))
     if dry_run:
         print("\n[dry-run] Aucun fichier écrit.")
         return {}
