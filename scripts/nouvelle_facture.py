@@ -39,11 +39,10 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.utils.cell import coordinate_to_tuple
 from openpyxl.worksheet.worksheet import Worksheet
 
-try:
-    from facturation import config, pcf_format as fmt
-except ModuleNotFoundError:  # exécution depuis le dépôt sans installation
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    from facturation import config, pcf_format as fmt
+# Le paquet de ce dépôt passe toujours en premier, même si l'interpréteur porte
+# l'installation éditable d'une autre copie (FA-13).
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from facturation import config, pcf_format as fmt  # noqa: E402
 
 
 class EcritureRefusee(RuntimeError):

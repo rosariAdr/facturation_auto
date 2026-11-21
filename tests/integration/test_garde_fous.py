@@ -481,3 +481,34 @@ def test_profil_verifier_signale_le_destinataire_incomplet(tmp_path, racine_ecol
     assert incomplets[0].niveau == verification.ATTENTION
     assert "ECOLEB (Adresse L1, Adresse L2)" in incomplets[0].message
     assert "ECOLEA" not in incomplets[0].message
+
+
+# ──────────────────────────────────────────────────────────────────────
+# FA-13 — le script importe le paquet de son dépôt, pas celui d'une autre copie
+# ──────────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def autre_copie(tmp_path: Path) -> Path:
+    """Dossier contenant un autre paquet `facturation`, qui s'arrête dès qu'on l'importe.
+
+    Il joue l'installation éditable d'une autre copie du dépôt : placé sur le chemin
+    d'import, il passe avant le paquet installé.
+    """
+    dossier = tmp_path / "autre_copie"
+    paquet = dossier / "facturation"
+    paquet.mkdir(parents=True)
+    (paquet / "__init__.py").write_text('raise SystemExit("AUTRE COPIE importée : " + __file__)\n', encoding="utf-8")
+    return dossier
+
+
+def test_nouvelle_facture_importe_le_paquet_de_son_depot(tmp_path, autre_copie):
+    """Lancé par son chemin, sans `lancer()` qui force PYTHONPATH, le script ignore l'autre copie."""
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONPATH": str(autre_copie)}
+    res = subprocess.run(
+        [sys.executable, str(SCRIPT), "--help"],
+        capture_output=True, text=True, encoding="utf-8", env=env, cwd=tmp_path,
+    )
+    assert "AUTRE COPIE" not in res.stdout + res.stderr
+    assert res.returncode == 0, res.stderr
+    assert "--data-root" in res.stdout
