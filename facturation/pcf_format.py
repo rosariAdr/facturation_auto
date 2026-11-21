@@ -364,6 +364,11 @@ def _xworkbook_clone_modele(
     return new_ws
 
 
+def _titre_facture(date_emission: date) -> str:
+    """Texte du bandeau (B2), écrit par apply_metadata et contrôlé par verifier_facture."""
+    return f"FACTURE\nDate d'émission: {date_emission.strftime('%d/%m/%Y')}"
+
+
 def _layout_for(entite: str) -> dict:
     """Plan des cellules de l'entité : le sien s'il est déclaré, sinon le standard."""
     return LAYOUTS.get(valider_entite(entite), LAYOUT_STANDARD)
@@ -537,8 +542,7 @@ def apply_metadata(
     layout = _layout_for(entite)
     siret = _siret_for(entite)
 
-    titre = f"FACTURE\nDate d'émission: {date_emission.strftime('%d/%m/%Y')}"
-    _set_if_not_merged(ws, layout["bandeau_row"], 2, titre)
+    _set_if_not_merged(ws, layout["bandeau_row"], 2, _titre_facture(date_emission))
 
     ws[layout["siret_label_cell"]] = "N° SIRET :"
     ws[layout["siret_cell"]] = siret
@@ -852,3 +856,73 @@ def post_mortem(ws: Worksheet, entite: str = "ROSARI") -> dict:
         "iban": ws[layout["rib_iban_cell"]].value,
         "bic": ws[layout["rib_bic_cell"]].value,
     }
+
+
+def verifier_facture(
+    ws: Worksheet,
+    *,
+    entite: str,
+    n_facture: str,
+    date_emission: date,
+    dest: Optional[dict],
+    ecole_name: str,
+    groups: list,
+) -> list:
+    """Compare les cellules relues d'une facture aux valeurs attendues (PCF étape 7.3, FA-12).
+
+    Contrôle les cellules du post-mortem et, ligne par ligne, la date, les heures et
+    le taux de chaque séance. Les valeurs attendues viennent des mêmes sources que
+    l'écriture : la spec (numéro, date, séances) et MASTER.Coordonnées (émetteur,
+    SIRET, IBAN, BIC).
+
+    Args:
+        ws: onglet de la facture, de préférence relu depuis le fichier écrit.
+        entite: code de l'entité.
+        n_facture, date_emission, dest, ecole_name, groups: ceux passés à
+            apply_metadata, apply_destinataire et place_sessions.
+
+    Returns:
+        Une ligne « ERREUR sur cellule … : attendu …, trouvé … » par écart ; liste vide
+        si la facture est conforme.
+    """
+    layout = _layout_for(entite)
+    cols = layout["cols_table"]
+    donnees = _load_master_data(entite)
+    pm = post_mortem(ws, entite=entite)
+    lettre_total = get_column_letter(cols["total"])
+    lettre_total_fin = get_column_letter(cols["total"] + 1)
+
+    attendu = {
+        "titre": _titre_facture(date_emission),
+        "emetteur_nom": donnees["emetteur"]["nom"],
+        "destinataire_nom": dest["nom"] if dest else None,
+        "n_facture": n_facture,
+        "siret": donnees["info"]["SIRET"],
+        "ecole": ecole_name,
+        "premier_libelle": groups[0][1] if groups else None,
+        "total_formule": (
+            f"=SUM({lettre_total}{layout['cours_first_row']}:"
+            f"{lettre_total_fin}{layout['cours_last_row']})"
+        ),
+        "iban": donnees["info"]["IBAN"],
+        "bic": donnees["info"]["BIC"],
+    }
+    ecarts = [
+        f"ERREUR sur cellule {cle} : attendu {valeur!r}, trouvé {pm[cle]!r}"
+        for cle, valeur in attendu.items()
+        if pm[cle] != valeur
+    ]
+
+    seances = [seance for _, _, sessions in groups for seance in sessions]
+    for i, (jour, heures, taux) in enumerate(seances):
+        ligne = layout["cours_first_row"] + i
+        for nom, col, valeur in (
+            ("date", cols["date"], jour), ("heures", cols["heures"], heures), ("taux", cols["taux"], taux),
+        ):
+            lu = ws.cell(row=ligne, column=col).value
+            if nom == "date" and hasattr(lu, "date") and not hasattr(valeur, "hour"):
+                lu = lu.date()  # une date relue revient en datetime
+            if lu != valeur:
+                coord = f"{get_column_letter(col)}{ligne}"
+                ecarts.append(f"ERREUR sur cellule {nom} ({coord}) : attendu {valeur!r}, trouvé {lu!r}")
+    return ecarts
