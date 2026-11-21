@@ -22,8 +22,9 @@
 *.eml
 *.msg
 
-# Exception : le gabarit standard, vidé de toute coordonnée
-!facturation/assets/*.xlsx
+# Exception : le seul gabarit standard, vidé de toute coordonnée. Un gabarit
+# propre à une entité, déposé dans le même dossier, reste ignoré.
+!facturation/assets/PCF_facture_standard.xlsx
 
 # === Fichiers de verrou d'Excel et de LibreOffice (classeur ouvert) ===
 ~$*
@@ -39,7 +40,8 @@ _sorties/
 _archives/
 
 # === Specs de factures réelles (contiennent montants et clients) ===
-*.spec.json
+# Tout nom qui contient « spec » : spec.json, ma_spec.json, facture.spec.json…
+*spec*.json
 specs/
 !examples/spec_exemple.json
 
