@@ -29,17 +29,25 @@ Format de la spec (voir examples/spec_exemple.json) :
 """
 import argparse
 import json
+import re
 import sys
 from datetime import date, datetime
 from pathlib import Path
+from typing import Optional
 
 from openpyxl import Workbook, load_workbook
+from openpyxl.utils.cell import coordinate_to_tuple
+from openpyxl.worksheet.worksheet import Worksheet
 
 try:
     from facturation import config, pcf_format as fmt
 except ModuleNotFoundError:  # exécution depuis le dépôt sans installation
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from facturation import config, pcf_format as fmt
+
+
+class EcritureRefusee(RuntimeError):
+    """La facture ne peut pas être écrite : rien n'a été modifié sur le disque."""
 
 
 def _parse_date(valeur) -> date:
@@ -76,7 +84,53 @@ def construire_groupes(lignes: list) -> list:
     return groupes
 
 
-def apercu(spec: dict, groupes: list, dest: dict) -> str:
+def conflits_ecriture(
+    wb: Optional[Workbook], onglet: str, n_facture: str, *, entite: str
+) -> list:
+    """Raisons qui interdisent d'écrire cette facture dans le classeur de l'école (FA-02).
+
+    Une facture émise ne se modifie pas : elle s'annule par un avoir. L'écriture est
+    donc refusée si l'onglet existe déjà, y compris à la casse près (Excel ne
+    distingue pas « R_X001 » de « r_x001 », et openpyxl créerait en silence un
+    onglet suffixé « 1 »), ou si le numéro figure déjà dans un onglet du classeur :
+    dans son titre (factures renommées « PAID … ») ou dans sa cellule N° de facture.
+
+    Args:
+        wb: classeur cible, ou None s'il n'existe pas encore.
+        onglet: titre de l'onglet à créer.
+        n_facture: numéro de la facture à créer.
+        entite: code de l'entité, qui fixe la cellule du N° de facture.
+
+    Returns:
+        Une raison par onglet en conflit ; liste vide si l'écriture est possible.
+    """
+    if wb is None:
+        return []
+    numero = re.compile(rf"(?<![A-Za-z0-9]){re.escape(n_facture)}(?![A-Za-z0-9])", re.IGNORECASE)
+    plan = fmt.LAYOUTS.get(fmt.valider_entite(entite), fmt.LAYOUT_STANDARD)
+    ligne_n, col_n = coordinate_to_tuple(plan["n_facture_cell"])
+    raisons = []
+    for nom in wb.sheetnames:
+        if nom.casefold() == onglet.casefold():
+            casse = "" if nom == onglet else " (à la casse près)"
+            raisons.append(f"l'onglet '{nom}' existe déjà{casse}")
+            continue
+        feuille = wb[nom]
+        # Lire la seule cellule N°, et seulement si elle est dans l'étendue de l'onglet :
+        # openpyxl crée toute cellule lue, ce qui agrandirait l'onglet au prochain save.
+        cellule = (
+            feuille.cell(row=ligne_n, column=col_n).value
+            if isinstance(feuille, Worksheet)  # une feuille graphique n'a pas de cellule
+            and ligne_n <= feuille.max_row and col_n <= feuille.max_column
+            else None
+        )
+        dans_cellule = isinstance(cellule, str) and cellule.strip().casefold() == n_facture.casefold()
+        if numero.search(nom) or dans_cellule:
+            raisons.append(f"le numéro {n_facture} figure déjà dans l'onglet '{nom}'")
+    return raisons
+
+
+def apercu(spec: dict, groupes: list, dest: dict, conflits: Optional[list] = None) -> str:
     """Construit l'aperçu du PCF étape 6 (gate humain avant écriture)."""
     lignes_txt = []
     total_h = total_eur = 0.0
@@ -90,6 +144,12 @@ def apercu(spec: dict, groupes: list, dest: dict) -> str:
                 f"| {heures:>5}h | {taux:>6.2f} € | {heures * taux:>9.2f} €"
             )
     bc = spec.get("ref_bon_commande") or "—"
+    if conflits:
+        nature = "REMPLACEMENT" if any(r.startswith("l'onglet") for r in conflits) else "DOUBLON DE NUMÉRO"
+        etat_onglet = [f"Onglet        : {nature} — écriture refusée",
+                       *(f"                - {raison}" for raison in conflits)]
+    else:
+        etat_onglet = ["Onglet        : nouvel onglet"]
     return "\n".join([
         "====== APERÇU FACTURE ======",
         f"Entité        : {spec['entite']}",
@@ -99,6 +159,7 @@ def apercu(spec: dict, groupes: list, dest: dict) -> str:
         f"{dest.get('adresse_l2', '')}",
         f"Bon de commande : {bc}",
         f"Fichier       : {spec['fichier_sortie']} > onglet '{spec['onglet']}'",
+        *etat_onglet,
         "",
         "DÉTAIL DES SÉANCES :",
         *lignes_txt,
@@ -121,23 +182,25 @@ def generer(spec: dict, dry_run: bool = False) -> dict:
         )
 
     groupes = construire_groupes(spec["lignes"])
-    print(apercu(spec, groupes, dest))
+    onglet = spec["onglet"]
+    sortie = fmt.get_data_root() / spec["fichier_sortie"]
+    # Le classeur cible est ouvert dès l'aperçu, pour annoncer l'état de l'onglet.
+    wb = load_workbook(sortie) if sortie.exists() else None
+    conflits = conflits_ecriture(wb, onglet, spec["n_facture"], entite=entite)
+    print(apercu(spec, groupes, dest, conflits))
+    if conflits:
+        raise EcritureRefusee(
+            f"{sortie.name} n'a pas été modifié : " + " ; ".join(conflits) + ". "
+            "Une facture émise ne se modifie pas : elle s'annule par un avoir."
+        )
     if dry_run:
         print("\n[dry-run] Aucun fichier écrit.")
         return {}
 
-    sortie = fmt.get_data_root() / spec["fichier_sortie"]
     sortie.parent.mkdir(parents=True, exist_ok=True)
-    if sortie.exists():
-        wb = load_workbook(sortie)
-    else:
+    if wb is None:
         wb = Workbook()
         wb.remove(wb.active)
-
-    onglet = spec["onglet"]
-    if onglet in wb.sheetnames:
-        del wb[onglet]
-        print(f"\nAncien onglet '{onglet}' remplacé.")
 
     ws = fmt.clone_template(wb, onglet, entite=entite)
     fmt.apply_emetteur(ws, entite=entite)
@@ -193,7 +256,11 @@ def main():
     config.resoudre_racine(args.data_root, args.profil)
     print(f"Racine de données : {fmt.get_data_root()}")
 
-    generer(charger_spec(args.spec), dry_run=args.dry_run)
+    try:
+        generer(charger_spec(args.spec), dry_run=args.dry_run)
+    except EcritureRefusee as exc:
+        print(f"\nÉcriture refusée — {exc}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
