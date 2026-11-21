@@ -21,7 +21,9 @@ SPEC_EXEMPLE = DEPOT / "examples" / "spec_exemple.json"
 
 
 def _lancer(*args: str, env_extra: dict | None = None) -> subprocess.CompletedProcess:
-    env = {**os.environ, "PYTHONIOENCODING": "utf-8", **(env_extra or {})}
+    # PYTHONPATH : le sous-processus importe le paquet de ce dépôt, même si
+    # l'interpréteur porte l'installation éditable d'une autre copie (FA-13).
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8", **(env_extra or {}), "PYTHONPATH": str(DEPOT)}
     env.pop("PCF_DATA_ROOT", None)
     return subprocess.run(
         [sys.executable, *args], capture_output=True, text=True, encoding="utf-8", env=env, cwd=DEPOT,
@@ -131,3 +133,41 @@ def test_t_cfg_03_adresse_ical_invalide_refusee(tmp_path):
     assert res.returncode == 1 and "adresse iCal invalide" in res.stderr
     assert not (tmp_path / "agenda.secret").exists()
     assert profil.read_text(encoding="utf-8") == avant
+
+
+@pytest.fixture
+def autre_copie(tmp_path: Path) -> Path:
+    """Dossier contenant un autre paquet `facturation`, qui s'arrête dès qu'on l'importe.
+
+    Il joue l'installation éditable d'une autre copie du dépôt (FA-13) : placé sur
+    le chemin d'import, il passe avant le paquet installé.
+    """
+    dossier = tmp_path / "autre_copie"
+    paquet = dossier / "facturation"
+    paquet.mkdir(parents=True)
+    (paquet / "__init__.py").write_text(
+        'raise SystemExit("AUTRE COPIE importée : " + __file__)\n', encoding="utf-8"
+    )
+    return dossier
+
+
+def test_check_coherence_importe_le_paquet_de_son_depot(autre_copie):
+    """Lancé par son chemin, check_coherence importe le paquet de son dépôt, pas celui d'une autre copie."""
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONPATH": str(autre_copie)}
+    res = subprocess.run(
+        [sys.executable, "scripts/check_coherence.py", "--help"],
+        capture_output=True, text=True, encoding="utf-8", env=env, cwd=DEPOT,
+    )
+    assert "AUTRE COPIE" not in res.stdout + res.stderr
+    assert res.returncode == 0, res.stderr
+    assert "--data-root" in res.stdout
+
+
+def test_lancer_fait_importer_le_paquet_de_ce_depot(tmp_path, autre_copie, monkeypatch):
+    """`_lancer` fait importer aux sous-processus le paquet de ce dépôt, même si une autre copie est sur le chemin."""
+    monkeypatch.setenv("PYTHONPATH", str(autre_copie))
+    sonde = tmp_path / "sonde.py"
+    sonde.write_text("import facturation\nprint(facturation.__file__)\n", encoding="utf-8")
+    res = _lancer(str(sonde))
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert Path(res.stdout.strip()).resolve().parent == DEPOT / "facturation"
