@@ -116,6 +116,16 @@ def _verifier_donnees(profil: Profil) -> list[Constat]:
             ATTENTION, "Coordonnées",
             f"destinataires sans coordonnées (factures bloquées) : {', '.join(incomplets)}",
         ))
+    partiels = sorted(
+        f"{code} ({', '.join(manquants)})"
+        for code, dest in donnees["destinataires"].items()
+        if dest is not None and (manquants := fmt.champs_destinataire_manquants(dest))
+    )
+    if partiels:
+        constats.append(Constat(
+            ATTENTION, "Coordonnées",
+            f"destinataires incomplets (factures bloquées) : {', '.join(partiels)}",
+        ))
     return constats
 
 

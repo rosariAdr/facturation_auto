@@ -42,6 +42,10 @@ except ModuleNotFoundError:  # exécution depuis le dépôt sans installation
     from facturation import config, pcf_format as fmt
 
 
+class EcritureRefusee(RuntimeError):
+    """La facture ne peut pas être écrite : rien n'a été modifié sur le disque."""
+
+
 def _parse_date(valeur) -> date:
     """Accepte 'YYYY-MM-DD' ou un objet date déjà construit."""
     if isinstance(valeur, date):
@@ -119,6 +123,13 @@ def generer(spec: dict, dry_run: bool = False) -> dict:
             "gate étape 4 du PCF : compléter avant de générer "
             "(cf. references/ONBOARDING.md)."
         )
+    manquants = fmt.champs_destinataire_manquants(dest)
+    if manquants:
+        raise EcritureRefusee(
+            f"destinataire '{spec['ecole']}' incomplet dans MASTER.Coordonnées "
+            f"(manque : {', '.join(manquants)}) — gate étape 4 du PCF : compléter avant "
+            "de générer (cf. references/ONBOARDING.md)."
+        )
 
     groupes = construire_groupes(spec["lignes"])
     print(apercu(spec, groupes, dest))
@@ -193,7 +204,11 @@ def main():
     config.resoudre_racine(args.data_root, args.profil)
     print(f"Racine de données : {fmt.get_data_root()}")
 
-    generer(charger_spec(args.spec), dry_run=args.dry_run)
+    try:
+        generer(charger_spec(args.spec), dry_run=args.dry_run)
+    except EcritureRefusee as exc:
+        print(f"\nÉcriture refusée — {exc}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
