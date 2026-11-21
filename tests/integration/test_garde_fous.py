@@ -286,3 +286,22 @@ def test_prefixe_lu_dans_le_profil(tmp_path, deux_entites):
 
     assert refuse.returncode != 0 and "AL_" in refuse.stderr
     assert accepte.returncode == 0, accepte.stdout + accepte.stderr
+
+
+# ──────────────────────────────────────────────────────────────────────
+# FA-05 — l'aperçu montre tout ce qu'il faut valider
+# ──────────────────────────────────────────────────────────────────────
+
+LIBELLE_LONG = "[2026][CODE-PRODUIT-FICTIF-0001][PROMO 1][Module fictif au libellé volontairement long]"
+
+
+def test_apercu_montre_l_emetteur_et_le_libelle_complet(tmp_path, racine):
+    """Le dry-run affiche l'émetteur lu dans le MASTER et le libellé entier, sans troncature."""
+    assert len(LIBELLE_LONG) > 80
+    spec = spec_fictive()
+    spec["lignes"][0]["libelle"] = LIBELLE_LONG
+    res = lancer(tmp_path, spec, "--data-root", str(racine), "--dry-run")
+
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "Émetteur      : EMETTEUR FICTIF ALPHA — 1 rue Fictive, 00000 VILLE-FICTIVE" in res.stdout
+    assert LIBELLE_LONG in res.stdout
