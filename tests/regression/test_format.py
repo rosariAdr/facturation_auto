@@ -180,7 +180,7 @@ def _facture_17_seances(racine):
     wb = _classeur()
     ws = fmt.clone_template(wb, "R_DOR999 Sept 2026", entite="ROSARI")
     fmt.apply_emetteur(ws, entite="ROSARI")
-    fmt.apply_destinataire(ws, dest=fmt.get_destinataire("DOR"), entite="ROSARI")
+    fmt.apply_destinataire(ws, dest=fmt.get_destinataire("DOR", entite="ROSARI"), entite="ROSARI")
     fmt.apply_metadata(ws, n_facture="R_DOR999", date_emission=date(2026, 10, 1), entite="ROSARI")
     j = lambda n: date(2026, 9, n)  # noqa: E731
     groups = [

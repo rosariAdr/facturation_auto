@@ -53,6 +53,11 @@ _HEURE_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 _PREFIXE_RE = re.compile(r"^[A-Z]{1,3}_$")
 
 
+def prefixe_par_defaut(entite: str) -> str:
+    """Préfixe des numéros de facture quand le profil n'en fixe pas : initiale de l'entité + « _ »."""
+    return f"{valider_entite(entite)[0]}_"
+
+
 class ProfilInvalide(ValueError):
     """Profil absent ou mal rempli. `erreurs` liste chaque problème, champ par champ."""
 
@@ -165,7 +170,7 @@ def valider(brut: dict[str, Any], chemin: Path) -> Profil:
 
     prefixe = lire("utilisateur", "prefixe_facture")
     if prefixe is None and isinstance(entite, str):
-        prefixe = f"{entite[0]}_"
+        prefixe = prefixe_par_defaut(entite)
     if prefixe is not None and (not isinstance(prefixe, str) or not _PREFIXE_RE.match(prefixe)):
         erreurs.append(
             f"[utilisateur] prefixe_facture : {prefixe!r} invalide, attendu 1 à 3 "
