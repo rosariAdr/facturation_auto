@@ -186,6 +186,13 @@ def valider(brut: dict[str, Any], chemin: Path) -> Profil:
     if url_secrete is not None:
         if not isinstance(url_secrete, str) or not url_secrete.strip():
             erreurs.append("[agenda] fichier_url_secrete : doit être un chemin de fichier")
+        elif "://" in url_secrete:
+            # L'adresse iCal est un secret : elle n'est recopiée dans aucun message (FA-10).
+            erreurs.append(
+                "[agenda] fichier_url_secrete : contient une adresse (« :// ») au lieu du nom "
+                "du fichier qui la range ; valeur non affichée. Retirez-la du profil et lancez "
+                "`facturation profil agenda` pour la ranger dans agenda.secret"
+            )
         else:
             fichier_url = Path(url_secrete).expanduser()
             if not fichier_url.is_absolute():

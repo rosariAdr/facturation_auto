@@ -138,7 +138,12 @@ def _verifier_agenda(profil: Profil) -> list[Constat]:
             "(nécessaire à partir du lot 1)",
         )]
     if not fichier.is_file():
-        return [Constat(ATTENTION, "Agenda", f"fichier d'adresse iCal introuvable : {fichier}")]
+        # Seul le nom s'affiche : le chemin complet pourrait contenir l'adresse elle-même (FA-10).
+        return [Constat(
+            ATTENTION, "Agenda",
+            f"fichier d'adresse iCal introuvable : {fichier.name} "
+            "(déclaré dans le profil, [agenda] fichier_url_secrete)",
+        )]
     adresse = fichier.read_text(encoding="utf-8").strip()
     # L'adresse est un secret : on ne l'affiche jamais, on contrôle seulement sa forme.
     if not (adresse.startswith("https://") and adresse.endswith(".ics")):

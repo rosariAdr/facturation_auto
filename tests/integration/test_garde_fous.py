@@ -305,3 +305,35 @@ def test_apercu_montre_l_emetteur_et_le_libelle_complet(tmp_path, racine):
     assert res.returncode == 0, res.stdout + res.stderr
     assert "Émetteur      : EMETTEUR FICTIF ALPHA — 1 rue Fictive, 00000 VILLE-FICTIVE" in res.stdout
     assert LIBELLE_LONG in res.stdout
+
+
+# ──────────────────────────────────────────────────────────────────────
+# FA-10 — l'adresse iCal secrète n'est jamais affichée par `profil verifier`
+# ──────────────────────────────────────────────────────────────────────
+
+JETON = "private-0123456789abcdef"
+
+
+def test_profil_verifier_refuse_une_adresse_sans_l_afficher(tmp_path):
+    """Une adresse iCal collée dans le profil est refusée ; ni stdout ni stderr ne la recopient."""
+    url = f"https://calendar.example.org/calendar/ical/personne%40example.org/{JETON}/basic.ics"
+    profil = tmp_path / "profil.toml"
+    profil.write_text(
+        '[utilisateur]\nnom = "Personne A"\nentite = "ALPHA"\n\n'
+        f'[agenda]\nfichier_url_secrete = "{url}"\n\n'
+        f'[donnees]\nracine = "{(tmp_path / "donnees").as_posix()}"\n',
+        encoding="utf-8",
+    )
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONPATH": str(DEPOT),
+           "APPDATA": str(tmp_path / "appdata"), "XDG_CONFIG_HOME": str(tmp_path / "config")}
+    for variable in ("PCF_DATA_ROOT", "FACTURATION_PROFIL"):
+        env.pop(variable, None)
+    res = subprocess.run(
+        [sys.executable, "-m", "facturation", "profil", "verifier", "--profil", str(profil)],
+        capture_output=True, text=True, encoding="utf-8", env=env, cwd=tmp_path,
+    )
+
+    assert res.returncode != 0
+    assert "fichier_url_secrete" in res.stdout + res.stderr
+    assert JETON not in res.stdout + res.stderr
+    assert "calendar.example.org" not in res.stdout + res.stderr
