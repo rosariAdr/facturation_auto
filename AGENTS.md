@@ -142,9 +142,9 @@ Les règles ci-dessus sont du *contexte* qu'un agent peut ne pas suivre. Pour le
 - **Stack** : Python ≥ 3.11, paquet `facturation-auto` (commande `facturation`), `openpyxl` ; LibreOffice pour le PDF. Installation : `python -m pip install -e ".[dev]"`.
 - **Branche stable** : `main`. Intégration sur `dev`, créée depuis `main` le 17 novembre 2026. Ce modèle remplace l'ancien `main` / `develop` / `feature/*` ; `origin/develop`, identique à `main`, ne sert plus.
 - **IDs de ticket** (second cerveau Notion) : `F-xx` fonctionnalité, `T-XXX-NN` test, `ADRxxx` décision, `Qx` question ouverte. Branche : `feat/F-18-gabarit`.
-- **Porte** : `python -m pytest` — toute la banque (marqueurs `unit`, `integration`, `regression`, `e2e`), environ 6 min sur le poste. `xfail_strict` : un défaut connu marqué `xfail` qui se met à passer fait échouer la suite, pour rappeler de retirer le marqueur. `💡 [proposé]` y ajouter `ruff check` + `ruff format --check` derrière un `scripts/porte.py`.
+- **Porte** : `python -m pytest` — toute la banque (marqueurs `unit`, `integration`, `regression`, `e2e`), environ une minute et demie sur le poste (96 s mesurées le 18 novembre 2026). `xfail_strict` : un défaut connu marqué `xfail` qui se met à passer fait échouer la suite, pour rappeler de retirer le marqueur. `💡 [proposé]` y ajouter `ruff check` + `ruff format --check` derrière un `scripts/porte.py`.
 - **E2E** : Playwright via `pytest-playwright`, marqueur `e2e` déjà déclaré — **à partir du lot 2** (l'appli). Rien d'installé avant.
-- **CI** : `.github/workflows/tests.yml` rejoue la banque à chaque push sous Windows et Ubuntu (rendu PDF sauté si LibreOffice est absent) — c'est déjà l'équivalent de la porte.
+- **CI** : `.github/workflows/tests.yml` rejoue la banque à chaque PR et à chaque push sur `main`, `dev`, `feat/**`, `fix/**` et `chore/**`, sous Windows et Ubuntu, avec Python 3.11 et 3.12 (rendu PDF sauté si LibreOffice est absent) — c'est déjà l'équivalent de la porte.
 - **Pre-commit** : aucun. `💡 [proposé]` `pre-commit` + `ruff`.
 - **Scopes de commit** (relevés dans l'historique et complétés) : `format`, `gabarit`, `profil`, `agenda`, `master`, `cli`, `pdf`, `tests`, `ci`, `git`, et `lotN` pour le livrable d'un lot. Messages **en français**.
 - **Règles non négociables** :
@@ -156,5 +156,5 @@ Les règles ci-dessus sont du *contexte* qu'un agent peut ne pas suivre. Pour le
   - Du code testé plutôt que des appels MCP ; des fichiers plats, pas de base de données.
   - Les entités ne se mélangent jamais (préfixes de facture `R_` / `K_`).
   - Documentation et messages de l'outil **en français**.
-- **Fichiers locaux, jamais commités** : `CLAUDE.md`, `TASKS.md`, `dashboard.html`, `memory/`, `_archives/` (ignorés par `.gitignore`), `installer_poste.*` (exclusion locale `.git/info/exclude`). Ce fichier-ci, lui, est versionné : il ne contient aucune donnée.
+- **Fichiers locaux, jamais commités** : `CLAUDE.md`, `CLAUDE.local.md`, `CONTEXT.md`, `TASKS.md`, `dashboard.html`, `memory/`, `_archives/`, `.claude/settings.local.json` (ignorés par `.gitignore`), `installer_poste.*` et `.claude/worktrees/` (exclusion locale `.git/info/exclude`). Ce fichier-ci, lui, est versionné : il ne contient aucune donnée.
 - **Docs de référence** : `README.md` · `references/PROC00_pcf.md` · `references/FORMAT.md` · `references/MASTER_SCHEMA.md` · `references/ONBOARDING.md` · `references/ADR.md` (ADR001–011 ; les suivantes dans le journal de décisions du second cerveau Notion) · `CHANGELOG.md` · `SKILL.md`.

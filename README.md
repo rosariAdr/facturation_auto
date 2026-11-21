@@ -144,7 +144,9 @@ Tous les tests tournent sur des données fictives créées à la volée. Les dé
 connus du gabarit (T-FMT-07, à corriger par F-18) sont marqués `xfail` strict : ils
 restent visibles dans le rapport et feront échouer la suite le jour où ils seront
 corrigés, pour rappeler de retirer le marqueur. GitHub Actions rejoue la banque à
-chaque push sous Windows et Ubuntu. Le rendu PDF est sauté si LibreOffice est absent.
+chaque pull request et à chaque push sur `main`, `dev` et les branches de travail
+(`feat/**`, `fix/**`, `chore/**`), sous Windows et Ubuntu, avec Python 3.11 et 3.12.
+Le rendu PDF est sauté si LibreOffice est absent.
 
 ## Conventions
 
