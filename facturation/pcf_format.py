@@ -207,6 +207,29 @@ def _load_master_data(entite: str, refresh: bool = False) -> dict:
     return data
 
 
+# Champs sans lesquels un destinataire est incomplet : PROC00 étape 4 (raison sociale,
+# adresse complète) et MASTER_SCHEMA (Adresse L1 = rue, Adresse L2 = code postal et ville).
+# L'email et le pays (Adresse L3) restent facultatifs, comme dans apply_destinataire.
+CHAMPS_DESTINATAIRE_OBLIGATOIRES = (
+    ("nom", "Nom / Raison sociale"),
+    ("adresse_l1", "Adresse L1"),
+    ("adresse_l2", "Adresse L2"),
+)
+
+
+def champs_destinataire_manquants(dest: dict) -> list:
+    """Colonnes de MASTER.Coordonnées obligatoires mais vides pour ce destinataire (FA-09).
+
+    Returns:
+        Les libellés des colonnes manquantes ; liste vide si le destinataire est complet.
+    """
+    return [
+        libelle
+        for cle, libelle in CHAMPS_DESTINATAIRE_OBLIGATOIRES
+        if not str(dest.get(cle) or "").strip()
+    ]
+
+
 def get_destinataire(code_ecole: str, *, entite: str) -> Optional[dict]:
     """Helper public : retourne le destinataire pour une école donnée, ou None.
 

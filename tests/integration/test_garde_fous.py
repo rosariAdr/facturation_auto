@@ -435,3 +435,49 @@ def test_post_mortem_en_ecart_code_de_sortie_non_nul(tmp_path, racine, fmt_isole
     sortie = capsys.readouterr()
     assert "ERREUR sur cellule iban" in sortie.err
     assert "OK — facture" not in sortie.out
+
+
+# ──────────────────────────────────────────────────────────────────────
+# FA-09 — un destinataire sans adresse bloque la facture (PROC00 étape 4.3)
+# ──────────────────────────────────────────────────────────────────────
+
+from facturation import config, verification  # noqa: E402
+
+DEST_SANS_ADRESSE = ["Destinataire", "ECOLEB", "ECOLE B", "", "", "", "compta@ecole-b.example"]
+
+
+@pytest.fixture
+def racine_ecoleb_sans_adresse(tmp_path: Path) -> Path:
+    racine = tmp_path / "donnees"
+    master = creer_master_fictif(racine, destinataires=[DEST_ECOLEA, DEST_SANS_ADRESSE])
+    wb = load_workbook(master)
+    wb.create_sheet("Sessions")  # onglet obligatoire pour `profil verifier`
+    wb.save(master)
+    return racine
+
+
+def _spec_ecoleb() -> dict:
+    return spec_fictive(ecole="ECOLEB", ecole_label="ECOLE B", fichier_sortie="ALPHA/ECOLEB/ALPHA_ECOLEB.xlsx",
+                        onglet="A_ECOLEB001 Sept 2026", n_facture="A_ECOLEB001")
+
+
+@pytest.mark.parametrize("options", [(), ("--dry-run",)], ids=["ecriture", "dry-run"])
+def test_destinataire_sans_adresse_bloque(tmp_path, racine_ecoleb_sans_adresse, options):
+    res = lancer(tmp_path, _spec_ecoleb(), "--data-root", str(racine_ecoleb_sans_adresse), *options)
+
+    assert res.returncode != 0
+    assert "ECOLEB" in res.stderr and "Adresse L1" in res.stderr and "Adresse L2" in res.stderr
+    assert "APERÇU" not in res.stdout
+    assert not (racine_ecoleb_sans_adresse / "ALPHA" / "ECOLEB").exists()
+
+
+def test_profil_verifier_signale_le_destinataire_incomplet(tmp_path, racine_ecoleb_sans_adresse):
+    profil = tmp_path / "profil.toml"
+    profil.write_text(config.rediger("Personne A", "ALPHA", str(racine_ecoleb_sans_adresse)), encoding="utf-8")
+    constats = verification.verifier(config.charger(profil))
+
+    incomplets = [c for c in constats if c.sujet == "Coordonnées" and "incomplets" in c.message]
+    assert len(incomplets) == 1
+    assert incomplets[0].niveau == verification.ATTENTION
+    assert "ECOLEB (Adresse L1, Adresse L2)" in incomplets[0].message
+    assert "ECOLEA" not in incomplets[0].message

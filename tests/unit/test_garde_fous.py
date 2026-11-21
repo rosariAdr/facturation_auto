@@ -232,3 +232,32 @@ def test_verification_ne_recopie_pas_une_adresse_passee_en_chemin():
     """Défense en profondeur : un Profil construit sans `valider` ne fait pas fuir le jeton."""
     (constat,) = verification._verifier_agenda(_profil(Path(URL_FICTIVE)))
     assert JETON not in constat.message
+
+
+# ──────────────────────────────────────────────────────────────────────
+# FA-09 — destinataire incomplet
+# ──────────────────────────────────────────────────────────────────────
+
+from facturation import pcf_format as fmt  # noqa: E402
+
+COMPLET = {"nom": "SERVICE COMPTABLE ECOLE A", "adresse_l1": "1 avenue Fictive", "adresse_l2": "00000 VILLE-A",
+           "adresse_l3": "", "email": ""}
+
+
+def test_destinataire_complet_sans_email_accepte():
+    """L'email et le pays (L3) restent facultatifs, comme dans apply_destinataire."""
+    assert fmt.champs_destinataire_manquants(COMPLET) == []
+
+
+@pytest.mark.parametrize(
+    ("champ", "libelle"),
+    [("nom", "Nom / Raison sociale"), ("adresse_l1", "Adresse L1"), ("adresse_l2", "Adresse L2")],
+)
+@pytest.mark.parametrize("vide", ["", "   ", None])
+def test_champ_obligatoire_manquant(champ, libelle, vide):
+    assert fmt.champs_destinataire_manquants({**COMPLET, champ: vide}) == [libelle]
+
+
+def test_destinataire_sans_adresse():
+    sans_adresse = {**COMPLET, "adresse_l1": "", "adresse_l2": "", "email": "compta@ecole-b.example"}
+    assert fmt.champs_destinataire_manquants(sans_adresse) == ["Adresse L1", "Adresse L2"]

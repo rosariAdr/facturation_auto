@@ -261,6 +261,13 @@ def generer(spec: dict, dry_run: bool = False, *, prefixe: Optional[str] = None)
             "gate étape 4 du PCF : compléter avant de générer "
             "(cf. references/ONBOARDING.md)."
         )
+    manquants = fmt.champs_destinataire_manquants(dest)
+    if manquants:
+        raise EcritureRefusee(
+            f"destinataire '{spec['ecole']}' incomplet dans MASTER.Coordonnées "
+            f"(manque : {', '.join(manquants)}) — gate étape 4 du PCF : compléter avant "
+            "de générer (cf. references/ONBOARDING.md)."
+        )
 
     groupes = construire_groupes(spec["lignes"])
     onglet = spec["onglet"]
