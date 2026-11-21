@@ -32,7 +32,7 @@ import json
 import re
 import sys
 from datetime import date, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Optional
 
 from openpyxl import Workbook, load_workbook
@@ -70,6 +70,56 @@ def charger_spec(chemin: Path) -> dict:
     if not spec["lignes"]:
         raise ValueError("La spec ne contient aucune ligne de cours.")
     return spec
+
+
+def controler_spec(spec: dict, *, prefixe: Optional[str], racine: Path) -> Path:
+    """Vérifie que le numéro et le fichier de sortie concordent avec l'entité (FA-03).
+
+    Les entités ne se mélangent jamais : le numéro commence par le préfixe de
+    l'entité, et le classeur se range sous `<racine>/<ENTITE>/`, en chemin relatif,
+    sans « .. ». Les séparateurs « / » et « \\ » sont acceptés l'un comme l'autre.
+
+    Args:
+        spec: spec de la facture (clés `entite`, `n_facture`, `fichier_sortie`).
+        prefixe: préfixe des numéros de l'entité (`prefixe_facture` du profil) ; None
+            pour la règle par défaut (initiale de l'entité + « _ »).
+        racine: racine de données.
+
+    Returns:
+        Le chemin du classeur de sortie, sous `<racine>/<ENTITE>/`.
+
+    Raises:
+        EcritureRefusee: entité invalide, ou numéro ou fichier de sortie incohérent avec elle.
+    """
+    try:
+        entite = fmt.valider_entite(spec["entite"])
+    except ValueError as exc:
+        raise EcritureRefusee(f"entite {spec['entite']!r} : {exc}") from exc
+    prefixe = prefixe or config.prefixe_par_defaut(entite)
+    n_facture = str(spec["n_facture"])
+    if not n_facture.startswith(prefixe):
+        raise EcritureRefusee(
+            f"le numéro {n_facture} ne commence pas par le préfixe {prefixe} de l'entité {entite}"
+        )
+
+    brut = str(spec["fichier_sortie"])
+    chemin = PureWindowsPath(brut)  # reconnaît aussi les lecteurs (C:) et les chemins réseau
+    parties = chemin.parts
+    relatif_sous_entite = (
+        not chemin.anchor
+        and not PurePosixPath(brut).is_absolute()
+        and ".." not in parties
+        and len(parties) >= 2
+        and parties[0] == entite
+    )
+    sortie = racine.joinpath(*parties) if relatif_sous_entite else None
+    # Dernier filet : le chemin résolu (liens symboliques compris) reste sous <racine>/<ENTITE>/.
+    if sortie is None or not sortie.resolve().is_relative_to((racine / entite).resolve()):
+        raise EcritureRefusee(
+            f"fichier_sortie {brut!r} invalide : attendu un chemin relatif sous {entite}/ "
+            f"dans la racine de données, sans « .. » (ex. {entite}/<ECOLE>/{entite}_<ECOLE>.xlsx)"
+        )
+    return sortie
 
 
 def construire_groupes(lignes: list) -> list:
@@ -170,9 +220,17 @@ def apercu(spec: dict, groupes: list, dest: dict, conflits: Optional[list] = Non
     ])
 
 
-def generer(spec: dict, dry_run: bool = False) -> dict:
-    """Applique le PCF étapes 5 et 7. Retourne le post-mortem (dict vide si dry-run)."""
+def generer(spec: dict, dry_run: bool = False, *, prefixe: Optional[str] = None) -> dict:
+    """Applique le PCF étapes 5 et 7. Retourne le post-mortem (dict vide si dry-run).
+
+    Args:
+        spec: spec de la facture.
+        dry_run: aperçu seul, rien n'est écrit.
+        prefixe: préfixe des numéros de l'entité ; par défaut, la règle du profil
+            (initiale de l'entité + « _ »).
+    """
     entite = spec["entite"]
+    sortie = controler_spec(spec, prefixe=prefixe, racine=fmt.get_data_root())
     dest = fmt.get_destinataire(spec["ecole"], entite=entite)
     if dest is None:
         raise RuntimeError(
@@ -183,7 +241,6 @@ def generer(spec: dict, dry_run: bool = False) -> dict:
 
     groupes = construire_groupes(spec["lignes"])
     onglet = spec["onglet"]
-    sortie = fmt.get_data_root() / spec["fichier_sortie"]
     # Le classeur cible est ouvert dès l'aperçu, pour annoncer l'état de l'onglet.
     wb = load_workbook(sortie) if sortie.exists() else None
     conflits = conflits_ecriture(wb, onglet, spec["n_facture"], entite=entite)
@@ -253,11 +310,14 @@ def main():
     )
     args = parser.parse_args()
 
-    config.resoudre_racine(args.data_root, args.profil)
+    profil = config.resoudre_racine(args.data_root, args.profil)
     print(f"Racine de données : {fmt.get_data_root()}")
 
+    spec = charger_spec(args.spec)
+    # Le préfixe du profil ne vaut que pour son entité ; sinon, règle par défaut.
+    prefixe = profil.prefixe_facture if profil and profil.entite == spec["entite"] else None
     try:
-        generer(charger_spec(args.spec), dry_run=args.dry_run)
+        generer(spec, dry_run=args.dry_run, prefixe=prefixe)
     except EcritureRefusee as exc:
         print(f"\nÉcriture refusée — {exc}", file=sys.stderr)
         sys.exit(1)

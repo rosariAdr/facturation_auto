@@ -210,3 +210,79 @@ def test_apercu_annonce_un_remplacement_refuse(tmp_path, racine):
     assert "REMPLACEMENT" in res.stdout
     assert "nouvel onglet" not in res.stdout
     assert empreinte(classeur) == avant
+
+
+# ──────────────────────────────────────────────────────────────────────
+# FA-03 — entité, préfixe du numéro et dossier de sortie concordent
+# ──────────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def deux_entites(tmp_path: Path) -> Path:
+    """Racine fictive à deux entités : ALPHA et BETA, chacune son MASTER et son émetteur."""
+    racine = tmp_path / "donnees"
+    creer_master_fictif(racine, "ALPHA")
+    creer_master_fictif(racine, "BETA")
+    return racine
+
+
+def spec_beta(**surcharges) -> dict:
+    """Spec cohérente de l'entité BETA ; les surcharges introduisent l'incohérence testée."""
+    beta = {"entite": "BETA", "n_facture": "B_ECOLEA001", "onglet": "B_ECOLEA001 Sept 2026",
+            "fichier_sortie": "BETA/ECOLEA/BETA_ECOLEA.xlsx"}
+    return spec_fictive(**{**beta, **surcharges})
+
+
+def _rien_ecrit(racine: Path) -> bool:
+    return not any(p.suffix == ".xlsx" and "MASTER" not in p.name for p in racine.rglob("*"))
+
+
+def test_facture_de_la_seconde_entite_lue_dans_son_master(tmp_path, deux_entites):
+    """Une facture BETA prend l'émetteur, le SIRET et le dossier de BETA, sans toucher à ALPHA."""
+    res = lancer(tmp_path, spec_beta(), "--data-root", str(deux_entites))
+
+    assert res.returncode == 0, res.stdout + res.stderr
+    ws = load_workbook(deux_entites / "BETA" / "ECOLEA" / "BETA_ECOLEA.xlsx")["B_ECOLEA001 Sept 2026"]
+    assert ws["C7"].value == "EMETTEUR FICTIF BETA"
+    assert not (deux_entites / "ALPHA" / "ECOLEA").exists()
+
+
+def test_refus_numero_au_prefixe_d_une_autre_entite(tmp_path, deux_entites):
+    """Un numéro « A_… » sur une facture BETA est refusé avant toute écriture."""
+    res = lancer(tmp_path, spec_beta(n_facture="A_ECOLEA001"), "--data-root", str(deux_entites))
+
+    assert res.returncode != 0
+    assert "B_" in res.stderr and "A_ECOLEA001" in res.stderr
+    assert _rien_ecrit(deux_entites)
+
+
+@pytest.mark.parametrize(
+    "fichier_sortie",
+    ["ALPHA/ECOLEA/ALPHA_ECOLEA.xlsx", "BETA/../ALPHA/ECOLEA/ALPHA_ECOLEA.xlsx", "BETA_ECOLEA.xlsx", "ABSOLU"],
+    ids=["dossier-autre-entite", "remontee", "hors-dossier-entite", "absolu"],
+)
+def test_refus_fichier_de_sortie_hors_du_dossier_de_l_entite(tmp_path, deux_entites, fichier_sortie):
+    """Le fichier de sortie doit rester sous `<racine>/BETA/`, en chemin relatif, sans « .. »."""
+    if fichier_sortie == "ABSOLU":
+        fichier_sortie = str(tmp_path / "ailleurs" / "BETA_ECOLEA.xlsx")
+    res = lancer(tmp_path, spec_beta(fichier_sortie=fichier_sortie), "--data-root", str(deux_entites))
+
+    assert res.returncode != 0
+    assert "fichier_sortie" in res.stderr
+    assert _rien_ecrit(deux_entites)
+    assert not (tmp_path / "ailleurs").exists()
+
+
+def test_prefixe_lu_dans_le_profil(tmp_path, deux_entites):
+    """Avec un profil ALPHA, c'est son `prefixe_facture` qui fait foi, pas l'initiale."""
+    profil = tmp_path / "profil.toml"
+    profil.write_text(
+        '[utilisateur]\nnom = "Personne A"\nentite = "ALPHA"\nprefixe_facture = "AL_"\n\n'
+        f'[donnees]\nracine = "{deux_entites.as_posix()}"\n',
+        encoding="utf-8",
+    )
+    refuse = lancer(tmp_path, spec_fictive(), "--profil", str(profil), "--dry-run")
+    accepte = lancer(tmp_path, spec_fictive(n_facture="AL_ECOLEA001"), "--profil", str(profil), "--dry-run")
+
+    assert refuse.returncode != 0 and "AL_" in refuse.stderr
+    assert accepte.returncode == 0, accepte.stdout + accepte.stderr

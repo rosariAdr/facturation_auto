@@ -22,6 +22,10 @@ Où le module cherche les données (racine de données) :
 2. sinon la variable d'environnement `PCF_DATA_ROOT` ;
 3. sinon le répertoire de travail courant.
 La racine de données doit contenir `<ENTITE>/<ENTITE>_MASTER.xlsx`.
+
+Entité explicite (ADR001) : toute l'API publique exige `entite=` en argument
+nommé, sans valeur par défaut. Un script qui l'oublie lève une erreur au lieu
+de lire en silence le MASTER d'une autre entité.
 """
 
 import os
@@ -203,7 +207,7 @@ def _load_master_data(entite: str, refresh: bool = False) -> dict:
     return data
 
 
-def get_destinataire(code_ecole: str, entite: str = "ROSARI") -> Optional[dict]:
+def get_destinataire(code_ecole: str, *, entite: str) -> Optional[dict]:
     """Helper public : retourne le destinataire pour une école donnée, ou None.
 
     Args:
@@ -391,7 +395,7 @@ def _siret_for(entite: str) -> str:
 
 
 def clone_template(
-    dst_wb: Workbook, sheet_name: str, entite: str = "ROSARI"
+    dst_wb: Workbook, sheet_name: str, *, entite: str
 ) -> Worksheet:
     """Charge MODELE depuis le template de l'entité et le copie dans dst_wb.
 
@@ -412,7 +416,7 @@ def clone_template(
     return _xworkbook_clone_modele(gabarit, dst_wb, sheet_name)
 
 
-def apply_emetteur(ws: Worksheet, entite: str = "ROSARI"):
+def apply_emetteur(ws: Worksheet, *, entite: str):
     """Re-écrit l'émetteur dans le bloc col C (ROSARI) ou équivalent.
 
     Idempotent : peut être appelé sur un template déjà rempli.
@@ -446,7 +450,7 @@ def apply_emetteur(ws: Worksheet, entite: str = "ROSARI"):
 
 
 def apply_destinataire(
-    ws: Worksheet, dest: Optional[dict], entite: str = "ROSARI"
+    ws: Worksheet, dest: Optional[dict], *, entite: str
 ):
     """Écrit le destinataire ou vide la zone si dest=None.
 
@@ -520,7 +524,8 @@ def apply_metadata(
     ws: Worksheet,
     n_facture: str,
     date_emission: date,
-    entite: str = "ROSARI",
+    *,
+    entite: str,
     ref_bon_commande: Optional[str] = None,
 ):
     """Écrit titre row 2 + Bon de commande row 14 + SIRET D16 + N° Facture D17.
@@ -570,7 +575,8 @@ def place_sessions(
     ws: Worksheet,
     ecole_name: str,
     groups: list,
-    entite: str = "ROSARI",
+    *,
+    entite: str,
     masquer_jour: bool = False,
 ):
     """Place sessions groupées avec merges Promotion/Libellé/Jour/Heures/Taux/Total.
@@ -785,7 +791,7 @@ def place_sessions(
             ws.column_dimensions[get_column_letter(c)].hidden = True
 
 
-def apply_print_setup(ws: Worksheet, entite: str = "ROSARI"):
+def apply_print_setup(ws: Worksheet, *, entite: str):
     """Fige la mise en page : portrait, ajusté à 1 page de large.
 
     Le template fait 18 colonnes ; sans ajustement, l'export PDF coupe les
@@ -805,7 +811,7 @@ def apply_print_setup(ws: Worksheet, entite: str = "ROSARI"):
     ws.print_area = f"A1:{derniere_col}{layout['derniere_ligne_utile']}"
 
 
-def apply_rib(ws: Worksheet, entite: str = "ROSARI"):
+def apply_rib(ws: Worksheet, *, entite: str):
     """Re-écrit IBAN/BIC dans les cells du template (idempotent).
 
     Args:
@@ -818,7 +824,7 @@ def apply_rib(ws: Worksheet, entite: str = "ROSARI"):
     ws[layout["rib_bic_cell"]] = rib["BIC"]
 
 
-def post_mortem(ws: Worksheet, entite: str = "ROSARI") -> dict:
+def post_mortem(ws: Worksheet, *, entite: str) -> dict:
     """Retourne les cellules clés pour vérification après écriture.
 
     Args:
