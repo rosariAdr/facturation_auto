@@ -49,6 +49,7 @@ def afficher_cours(ws, ecoles: list):
     )
     print("─" * 160)
     ecarts = []
+    au_dela = []  # heures facturées au-delà des heures dispensées
     for r in range(2, ws.max_row + 1):
         ecole = ws.cell(row=r, column=COLS_COURS["ecole"]).value
         if ecole is None or (ecoles and ecole not in ecoles):
@@ -61,20 +62,33 @@ def afficher_cours(ws, ecoles: list):
             f"{str(v['n_facture'] or '')[:28]:<28} {str(v['statut'] or '')[:14]:<14}"
         )
         disp = _nombre(v["h_dispensees"])
-        somme = _nombre(v["h_facturees"]) + _nombre(v["h_a_facturer"])
+        fact = _nombre(v["h_facturees"])
+        somme = fact + _nombre(v["h_a_facturer"])
+        # Contrôlé même à 0 h dispensée : facturer des heures non dispensées est
+        # le cas le plus grave, et l'égalité ci-dessous ne le voit pas toujours.
+        if fact - disp > 0.01:
+            au_dela.append((r, ecole, v["module"], disp, fact))
         if disp and abs(disp - somme) > 0.01:
             ecarts.append((r, ecole, v["module"], disp, somme))
 
+    if au_dela:
+        print("\n⚠ Heures facturées au-delà des heures dispensées :")
+        for r, ecole, module, disp, fact in au_dela:
+            print(f"  row {r} | {ecole} | {module} : {fact} facturées > {disp} dispensées")
     if ecarts:
         print("\n⚠ Écarts (H dispensées ≠ H facturées + H à facturer) :")
         for r, ecole, module, disp, somme in ecarts:
             print(f"  row {r} | {ecole} | {module} : {disp} ≠ {somme}")
-    else:
+    if not au_dela and not ecarts:
         print("\n✅ Aucun écart d'heures détecté.")
 
 
 def afficher_sessions(ws, ecoles: list):
-    """Affiche MASTER.Sessions groupé par n° de facture, et détecte les doublons."""
+    """Affiche MASTER.Sessions groupé par n° de facture.
+
+    Additionne toutes les lignes d'un numéro, sans détecter les doublons : une
+    séance journalisée deux fois compte deux fois dans les totaux (FA-08).
+    """
     par_facture: dict = {}
     for r in range(2, ws.max_row + 1):
         ecole = ws.cell(row=r, column=COLS_SESSIONS["ecole"]).value

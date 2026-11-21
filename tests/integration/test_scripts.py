@@ -74,6 +74,31 @@ def test_t_coh_01_ecart_volontaire_detecte(tmp_path):
     assert "Module juste" not in res.stdout.split("Écarts")[1]
 
 
+def test_coherence_signale_heures_facturees_non_dispensees(tmp_path):
+    """Toute ligne de Cours facturée au-delà des heures dispensées est signalée, même à 0 h dispensée (FA-08)."""
+    racine = tmp_path / "donnees"
+    creer_master(racine, cours=[
+        # Facturé sans aucune heure dispensée.
+        ["DOR", "Module non dispensé", "A1", 0, 0, 3, 0, "R_DOR001", None, "En cours"],
+        # Même cas, mais « à facturer » négatif équilibre l'égalité dispensées = facturées + à facturer.
+        ["DOR", "Module équilibré", "A2", 0, 0, 3, -3, "R_DOR001", None, "En cours"],
+        # Heures dispensées, mais moins que les heures facturées.
+        ["DOR", "Module dépassé", "A3", 0, 10, 12, -2, "R_DOR002", None, "En cours"],
+        ["DOR", "Module juste", "A4", 0, 10, 6, 4, "R_DOR001", None, "En cours"],
+        ["DOR", "Module à venir", "A5", 20, None, None, None, None, None, "À venir"],
+    ])
+    res = _lancer("scripts/check_coherence.py", "--entite", "ROSARI", "--data-root", str(racine))
+    assert res.returncode == 0, res.stderr
+    assert "Aucun écart" not in res.stdout
+    titre = "Heures facturées au-delà des heures dispensées"
+    assert titre in res.stdout, res.stdout
+    signalees = res.stdout.split(titre)[1].split("⚠")[0]
+    for module in ("Module non dispensé", "Module équilibré", "Module dépassé"):
+        assert module in signalees, signalees
+    for module in ("Module juste", "Module à venir"):
+        assert module not in signalees, signalees
+
+
 def test_t_ver_01_verifier_installation(tmp_path):
     """T-VER-01 — `facturation profil verifier` : 0 erreur sur une installation fictive complète."""
     racine = tmp_path / "donnees"
