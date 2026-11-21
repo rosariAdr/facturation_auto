@@ -235,6 +235,14 @@ def apercu(
     ])
 
 
+class PostMortemEnEcart(RuntimeError):
+    """La facture est écrite, mais des cellules relues diffèrent des valeurs attendues."""
+
+    def __init__(self, ecarts: list):
+        self.ecarts = ecarts
+        super().__init__("\n".join(ecarts))
+
+
 def generer(spec: dict, dry_run: bool = False, *, prefixe: Optional[str] = None) -> dict:
     """Applique le PCF étapes 5 et 7. Retourne le post-mortem (dict vide si dry-run).
 
@@ -296,10 +304,25 @@ def generer(spec: dict, dry_run: bool = False, *, prefixe: Optional[str] = None)
     wb.save(sortie)
     print(f"\nÉcrit : {sortie}")
 
-    pm = fmt.post_mortem(ws, entite=entite)
+    # Post-mortem sur les cellules relues dans le fichier écrit, pas sur l'objet en mémoire.
+    ws_relu = load_workbook(sortie)[ws.title]
+    pm = fmt.post_mortem(ws_relu, entite=entite)
     print("\n── Post-mortem (PCF étape 7.2) ──")
     for cle, valeur in pm.items():
         print(f"  {cle:<18} : {valeur!r}")
+
+    ecarts = fmt.verifier_facture(
+        ws_relu,
+        entite=entite,
+        n_facture=spec["n_facture"],
+        date_emission=_parse_date(spec["date_emission"]),
+        dest=dest,
+        ecole_name=spec.get("ecole_label", spec["ecole"]),
+        groups=groupes,
+    )
+    if ecarts:
+        raise PostMortemEnEcart(ecarts)
+    print(f"\nOK — facture {spec['n_facture']} conforme à l'aperçu (post-mortem vérifié, PCF étape 7.3).")
     return pm
 
 
@@ -336,6 +359,14 @@ def main():
     except EcritureRefusee as exc:
         print(f"\nÉcriture refusée — {exc}", file=sys.stderr)
         sys.exit(1)
+    except PostMortemEnEcart as exc:
+        print("\n" + "\n".join(exc.ecarts), file=sys.stderr)
+        print(
+            "\nFacture écrite mais NON CONFORME (PCF étape 7.3) : ne pas l'envoyer ni la "
+            "marquer finalisée ; corriger la cause, puis la régénérer.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
 
 
 if __name__ == "__main__":
