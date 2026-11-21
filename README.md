@@ -144,12 +144,16 @@ Tous les tests tournent sur des données fictives créées à la volée. Les dé
 connus du gabarit (T-FMT-07, à corriger par F-18) sont marqués `xfail` strict : ils
 restent visibles dans le rapport et feront échouer la suite le jour où ils seront
 corrigés, pour rappeler de retirer le marqueur. GitHub Actions rejoue la banque à
-chaque push sous Windows et Ubuntu. Le rendu PDF est sauté si LibreOffice est absent.
+chaque pull request et à chaque push sur `main`, `dev` et les branches de travail
+(`feat/**`, `fix/**`, `chore/**`), sous Windows et Ubuntu, avec Python 3.11 et 3.12.
+Le rendu PDF est sauté si LibreOffice est absent.
 
 ## Conventions
 
-- Branches : `main` (stable), `develop` (en cours), `feature/*`.
-- Commits conventionnels : `feat:`, `fix:`, `docs:`, `test:`, `refactor:`, `chore:`.
+Les conventions de travail — branches (`main` / `dev` / `feat|fix|chore/*`), Conventional
+Commits, porte de tests, règles pour les agents — vivent dans [AGENTS.md](AGENTS.md), lu par
+Claude Code et Codex. En bref :
+
 - Aucune donnée réelle dans le dépôt, y compris dans les tests et les exemples.
 - Décisions : ADR001 à ADR011 dans [references/ADR.md](references/ADR.md), les
   suivantes dans le journal de décisions du second cerveau Notion.
