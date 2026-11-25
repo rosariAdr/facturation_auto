@@ -24,14 +24,15 @@ Conséquence : le gabarit peut être versionné et partagé sans rien exposer, e
 | Encadré émetteur | `C7:E11` | `apply_emetteur` (5 lignes) |
 | Encadré destinataire | `M7:P10` | `apply_destinataire` (4 lignes) |
 | Bon de commande | `C14` + `D14:H14` | `apply_metadata(ref_bon_commande=…)` |
+| N° de contrat | `C15` + `D15:H15` | `apply_metadata(ref_contrat=…)` ; ligne vide sans contrat |
 | N° SIRET | `C16` + `D16` | `apply_metadata` |
 | N° de facture | `C17` + `D17` | `apply_metadata` |
 | En-tête du tableau | ligne 19 | gabarit (fixe) |
 | Lignes de cours | lignes 20-79 (60) | `place_sessions` |
-| TOTAL | ligne 80 | gabarit : `=SUM(Q20:R79)` |
-| À payer, TVA | lignes 83-85 | gabarit (texte fixe, voir « Mentions et totaux ») |
+| Total HT | ligne 80 | gabarit : `=SUM(Q20:R79)` ; libellé écrit par `apply_mentions` |
+| Net à payer, TVA, déclaration d'activité | lignes 83-86 | `apply_mentions` (voir « Mentions et totaux ») |
 | RIB | `D88` / `D89` | `apply_rib` |
-| Mentions de paiement | lignes 91-93 | gabarit (texte fixe, voir « Mentions et totaux ») |
+| Échéance et mentions de paiement | lignes 91-94 | `apply_mentions` (voir « Mentions et totaux ») |
 
 ### Colonnes du tableau de cours
 
@@ -47,24 +48,27 @@ Conséquence : le gabarit peut être versionné et partagé sans rien exposer, e
 
 ---
 
-## Mentions et totaux : aujourd'hui et cible (ADR030, F-24)
+## Mentions et totaux (ADR030, F-24)
 
-| Élément | Aujourd'hui dans le gabarit | Cible (prévu, F-24) |
+Depuis F-24, les textes du bas de facture sont écrits par le module (`apply_mentions`, appelée après `place_sessions`) : les anciens textes du gabarit sont remplacés à chaque génération. Les cellules suivent le décalage des lignes au-delà de 60 séances.
+
+| Élément | Cellule | Contenu |
 |---|---|---|
-| Nom de l'émetteur | Tel qu'écrit dans `Coordonnées` | Nom et prénom suivis de « EI » : c'est une donnée du MASTER, rien à changer dans le gabarit |
-| Nom du client | Tel qu'écrit dans `Coordonnées` | Dénomination juridique de la société qui paie : donnée du MASTER |
-| Références | Bon de commande (`C14`), n° de facture (`C17`) | Trois lignes distinctes : n° de facture, n° de contrat (nouvelle ligne), n° de bon de commande si l'école en émet un |
-| Total | `TOTAL` (ligne 80) | « Total HT » |
-| Montant dû | « À payer TTC* » (`C83`) | « Net à payer » |
-| Astérisque | « *Montant non assujetti a la TVA » (`C84`) | Retirée |
-| Mention de TVA | « TVA non applicable-art. 293 B du CGI- franchise en base » (`C85`) | « TVA non applicable, article 293 B du Code général des impôts. » (citation du CGI admise jusqu'au 30/06/2028, ADR030) |
-| Déclaration d'activité | Absente ; ajoutée à la main en `C86` depuis le 30/10/2026 | Une ligne remplie depuis `Coordonnées` (`Info` / `NDA`) |
-| Échéance | « Facture Payable Fin de Mois » (`C91`) | « Échéance : JJ/MM/AAAA », calculée : délai du contrat ou de l'école, sinon date d'émission + 30 jours |
-| Escompte | « Pas d'escompte en cas de paiement anticipe » (`C92`) | Conservée (accents corrigés) |
-| Pénalités | Trois fois le taux d'intérêt légal (`C93`) | Conservée, complétée : « exigibles dès le lendemain de l'échéance, sans rappel préalable » |
-| Frais de recouvrement | Absente | « Indemnité forfaitaire pour frais de recouvrement : 40 € » |
+| Nom de l'émetteur | `C7` | Donnée du MASTER : nom suivi de « EI » ; sans cette mention, l'écriture est refusée |
+| Nom du client | `M7` | Donnée du MASTER : dénomination juridique de la société qui paie |
+| N° de contrat | `C15` + `D15:H15` | « N° de contrat : » et la valeur de la spec (`ref_contrat`) ; ligne vide sans contrat |
+| Bon de commande | `C14` + `D14:H14` | Inchangé (`ref_bon_commande`) |
+| Total | `O80` | « Total HT » |
+| Montant dû | `C83` + `E83` | « Net à payer : » et une formule vers le total (décalée au-delà de 60 séances) |
+| Ancienne astérisque | `C84` | Vidée |
+| Mention de TVA | `C85:K85` | « TVA non applicable, article 293 B du Code général des impôts. » (fusion élargie pour ne pas couper la phrase ; citation du CGI admise jusqu'au 30/06/2028) |
+| Déclaration d'activité | `C86` | Texte de `Coordonnées` / `Info` / `NDA`, recopié tel quel, sans fusion ; sans cette ligne, l'écriture est refusée |
+| Échéance | `C91` | « Échéance : JJ/MM/AAAA » : la date de la spec (`echeance`), sinon date d'émission + 30 jours |
+| Escompte | `C92` | « Pas d'escompte en cas de paiement anticipé. » |
+| Pénalités | `C93:K93` | « Pénalités de retard : trois fois le taux d'intérêt légal, exigibles dès le lendemain de l'échéance, sans rappel préalable. » |
+| Frais de recouvrement | `C94:K94` | « Indemnité forfaitaire pour frais de recouvrement en cas de retard de paiement : 40 €. » |
 
-Une donnée obligatoire manquante (n° de contrat attendu, délai, NDA…) bloque l'émission au lieu de laisser une zone vide (F-17). Pas de ligne « TVA : 0 € » (ADR030).
+La zone d'impression va jusqu'à la ligne 94 (plus le décalage). Pas de ligne « TVA : 0 € » (ADR030). Une échéance antérieure à la date d'émission est refusée.
 
 ---
 
@@ -98,7 +102,9 @@ Une donnée obligatoire manquante (n° de contrat attendu, délai, NDA…) bloqu
 
 **Au-delà de la 7e ligne de séances, les colonnes Heures, Taux et Total perdent leur format nombre** (T-FMT-07). Contourné à la main en octobre 2026 ; correction prévue par F-18.
 
-**Une dénomination longue est coupée dans l'encadré destinataire (`M7`)**, et un libellé de bon de commande long est tronqué en `C14` + `D14:H14`. Contournés à la main en octobre 2026 ; à corriger avec F-18 et F-24.
+**Une dénomination longue est coupée dans l'encadré destinataire (`M7`)**, et le libellé « Bon de commande : » est tronqué en `C14` + `D14:H14`. Contournés à la main en octobre 2026 ; à corriger avec F-18.
+
+**Au-delà de 60 séances, seules les mentions suivent le décalage des lignes.** `apply_rib` écrit toujours en `D88` / `D89`, et `post_mortem` / `verifier_facture` lisent le total et le RIB à leur place fixe : une telle facture est rejetée par le contrôle après écriture, ce qui bloque l'envoi au lieu de laisser passer une erreur. À corriger avec F-18.
 
 ---
 
@@ -117,14 +123,18 @@ Toutes les fonctions qui touchent une facture exigent l'entité en argument nomm
 | `clone_template(dst_wb, sheet_name, *, entite)` | Clone `MODELE` dans un classeur cible |
 | `apply_emetteur(ws, *, entite)` | Encadré émetteur |
 | `apply_destinataire(ws, dest, *, entite)` | Encadré destinataire (`None` = encadré vide) |
-| `apply_metadata(ws, n_facture, date_emission, *, entite, ref_bon_commande=None)` | Titre, bon de commande, SIRET, n° de facture |
+| `apply_metadata(ws, n_facture, date_emission, *, entite, ref_bon_commande=None, ref_contrat=None)` | Titre, bon de commande, n° de contrat, SIRET, n° de facture |
 | `place_sessions(ws, ecole_name, groups, *, entite, masquer_jour=False)` | Lignes de cours groupées par (promotion, libellé) |
+| `apply_mentions(ws, *, entite, date_emission, echeance=None)` | Total HT, net à payer, TVA, déclaration d'activité, échéance, escompte, pénalités, indemnité de 40 € (ADR030) |
 | `apply_rib(ws, *, entite)` | IBAN + BIC |
 | `apply_print_setup(ws, *, entite)` | Portrait, ajusté à une page de large, zone d'impression |
-| `post_mortem(ws, *, entite)` | Dictionnaire des cellules clés |
-| `verifier_facture(ws, *, entite, n_facture, date_emission, dest, ecole_name, groups)` | Liste des écarts entre la facture relue et les valeurs attendues |
+| `post_mortem(ws, *, entite)` | Dictionnaire des cellules clés, dont échéance, NDA et contrat |
+| `verifier_facture(ws, *, entite, n_facture, date_emission, dest, ecole_name, groups, echeance=None, ref_contrat=None)` | Liste des écarts entre la facture relue et les valeurs attendues |
+| `calculer_echeance(date_emission, echeance=None)` | Échéance donnée, sinon émission + 30 jours ; refuse une échéance antérieure |
+| `emetteur_porte_ei(nom)` | Le nom de l'émetteur porte-t-il « EI » ou « Entrepreneur individuel » ? |
+| `get_nda(*, entite)` | Texte de `Coordonnées` / `Info` / `NDA` ; erreur s'il manque |
 
-Ordre d'appel : `clone_template` → `apply_emetteur` → `apply_destinataire` → `apply_metadata` → `place_sessions` → `apply_rib` → `apply_print_setup` → `post_mortem` / `verifier_facture`.
+Ordre d'appel : `clone_template` → `apply_emetteur` → `apply_destinataire` → `apply_metadata` → `place_sessions` → `apply_mentions` → `apply_rib` → `apply_print_setup` → `post_mortem` / `verifier_facture`.
 
 ---
 

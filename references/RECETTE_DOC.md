@@ -46,6 +46,7 @@ ws.append(["Info", "DEMO", "SIRET", "00000000000000"])
 ws.append(["Info", "DEMO", "IBAN", "FR76 0000 0000 0000 0000 0000 000"])
 ws.append(["Info", "DEMO", "BIC", "TESTFRPP"])
 ws.append(["Info", "DEMO", "TVA", "TVA non applicable, article 293 B du Code général des impôts"])
+ws.append(["Info", "DEMO", "NDA", "Déclaration d'activité enregistrée sous le n° 00000000000 auprès du préfet de région Exemple"])
 ws.append(["Destinataire", "FIC", "ÉCOLE FICTIVE SAS", "2 avenue du Test", "00000 VILLE-TEST", "France", "compta@ecole-fictive.example"])
 wb.create_sheet("Sessions").append(["Date_log", "École", "Période_facture", "N°_Facture", "Date_séance", "Début", "Fin",
                                     "Durée_h", "Promotion", "Module / UE", "Taux", "Total HT", "Summary calendrier verbatim"])
@@ -86,7 +87,7 @@ Créer `C:/recette/spec.json` en suivant `examples/spec_exemple.json` :
 python scripts/nouvelle_facture.py "C:/recette/spec.json" --data-root "C:/recette/donnees" --dry-run
 python scripts/nouvelle_facture.py "C:/recette/spec.json" --data-root "C:/recette/donnees"
 ```
-Attendu : l'aperçu annonce un total de 500 € HT (10 h × 50 €) et n'écrit rien ; l'écriture crée `C:/recette/donnees/DEMO/FIC/DEMO_FIC.xlsx`, onglet `D_FIC001 Nov 2026`, et le contrôle après écriture ne signale aucun écart. Relancer la même écriture doit être refusé (la facture existe déjà).
+Attendu : l'aperçu annonce un total de 500 € HT (10 h × 50 €), une échéance au 31/12/2026 (émission + 30 jours) et le NDA, et n'écrit rien ; l'écriture crée `C:/recette/donnees/DEMO/FIC/DEMO_FIC.xlsx`, onglet `D_FIC001 Nov 2026`, et le contrôle après écriture ne signale aucun écart. Relancer la même écriture doit être refusé (la facture existe déjà).
 
 ### 7. Répondre à cinq questions, avec le dépôt seul
 Pour chaque réponse, citer le fichier et la section qui la donnent.

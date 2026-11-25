@@ -34,11 +34,11 @@ C'est ainsi que sont produites les factures de novembre 2026.
 | 1. Périmètre | Humain | Choisir l'entité, l'école, la période et le contrat. Numéro : plus grand numéro de la série + 1 (ADR029). Date d'émission : le 1er du mois suivant (ADR027). |
 | 2. Relevé de l'agenda | Humain | Relever les séances de la période dans l'agenda des cours. **Aucune lecture automatique** (prévue en F-10). |
 | 3. Contrôle du MASTER | Script + humain | `python scripts/check_coherence.py --sessions` : état de `Cours` et de `Sessions`, en lecture seule ; il additionne les lignes d'une facture **sans repérer les doublons**. Les heures facturables suivent les règles de l'école. |
-| 4. Coordonnées | Script + humain | `facturation profil verifier` signale un émetteur ou un destinataire incomplet ; `nouvelle_facture.py` refuse un destinataire absent ou sans adresse. |
+| 4. Coordonnées | Script + humain | `facturation profil verifier` signale un émetteur ou un destinataire incomplet ; `nouvelle_facture.py` refuse un destinataire absent ou sans adresse, un NDA manquant et un émetteur sans « EI », dès l'aperçu. |
 | 5. Format | Script | `scripts/nouvelle_facture.py` applique le gabarit et le module (`FORMAT.md`). |
 | 6. Aperçu | Humain | `--dry-run` affiche émetteur, destinataire, lignes, totaux, sans rien écrire. Validation : oui, non ou corriger. |
 | 7. Écriture et contrôle | Script | Écrit un nouvel onglet dans le classeur de l'école (refuse un onglet ou un numéro déjà présent), relit les cellules clés et sort en erreur en cas d'écart. |
-| Après | Humain | **Hors outil pour l'instant** : journal `Sessions` et suivi `Cours` dans le MASTER, PDF, mentions de l'ADR030 si le gabarit ne les porte pas encore, brouillon de mail. |
+| Après | Humain | **Hors outil pour l'instant** : journal `Sessions` et suivi `Cours` dans le MASTER, PDF, brouillon de mail. Les mentions de l'ADR030 sont écrites par l'outil depuis F-24. |
 
 ```bash
 python scripts/nouvelle_facture.py ma_spec.json --data-root "<racine>" --dry-run   # aperçu
@@ -115,7 +115,7 @@ Ajout seul. Seule exception : une facture régénérée remplace ses propres lig
 Cellules relues par `post_mortem` et comparées à l'aperçu validé (`verifier_facture`) : titre, nom de l'émetteur, nom du destinataire, n° de facture, SIRET, école, premier libellé, formule du total, IBAN, BIC.
 
 - `destinataire_nom`, `siret` et `iban` ne peuvent venir que des appels `apply_*` : une valeur vide signale un appel oublié, donc une facture inexploitable.
-- Prévu (F-17, F-24) : contrôler aussi la présence des mentions de l'ADR030 et l'échéance.
+- Depuis F-24 : le contrôle porte aussi sur l'échéance, le NDA et la ligne de contrat.
 
 Si une cellule diffère : la facture n'est pas finalisée, l'outil affiche l'écart (« attendu … trouvé … ») et rend la main.
 
@@ -127,7 +127,7 @@ Si une cellule diffère : la facture n'est pas finalisée, l'outil affiche l'éc
 |---|---|---|
 | Aperçu validé par la personne qui facture | Oui | Oui |
 | Onglet écrit dans le bon classeur, contrôle après écriture sans écart | Oui (outil) | Oui (outil) |
-| Mentions de l'ADR030 présentes | À vérifier à la main | Garanti par le gabarit (F-24) |
+| Mentions de l'ADR030 présentes | Oui (outil, F-24) | Oui (outil) |
 | Journal `Sessions` et suivi `Cours` à jour | À la main | Outil |
 | Registre `Factures` (échéance, envoi, paiement) | — | Outil, dates d'envoi et de paiement saisies par Adrian |
 | PDF généré | À part | Outil (LibreOffice) |

@@ -55,9 +55,9 @@ La seule source des identités. Première ligne = en-têtes.
 
 Trois valeurs de `Type`, écrites exactement ainsi :
 
-- **`Émetteur`** (avec l'accent) — une ligne, `Code` = l'entité (`ROSARI`). `Nom` = nom et prénom suivis de « EI » ou « Entrepreneur individuel » (ADR030, valable pour ROSARI comme pour KAUR). Alimente l'encadré émetteur.
+- **`Émetteur`** (avec l'accent) — une ligne, `Code` = l'entité (`ROSARI`). `Nom` = nom et prénom suivis de « EI » ou « Entrepreneur individuel » (ADR030, valable pour ROSARI comme pour KAUR) ; sans cette mention, l'outil refuse d'écrire. Alimente l'encadré émetteur.
 - **`Destinataire`** — une ligne par école, `Code` = code de l'école. `Nom` = **dénomination juridique de la société qui paie**, telle qu'écrite au contrat (ADR030), pas le nom commercial. Une ligne sans nom ou sans adresse bloque la facture (étape 4 du PCF).
-- **`Info`** — `Code` = l'entité, `Nom` porte le libellé et `Adresse L1` la valeur. `SIRET`, `IBAN` et `BIC` sont obligatoires : leur absence lève une erreur au chargement. `TVA` porte la mention de TVA. `NDA` porte le n° de déclaration d'activité (lu par le gabarit avec F-24 ; ajouté à la main sur les factures jusque-là). Les lignes `Info` ne concernent que l'émetteur : on n'y range pas le SIRET d'une école.
+- **`Info`** — `Code` = l'entité, `Nom` porte le libellé et `Adresse L1` la valeur. `SIRET`, `IBAN` et `BIC` sont obligatoires : leur absence lève une erreur au chargement. `TVA` porte la mention de TVA. `NDA` porte le texte complet de la mention de déclaration d'activité, recopié tel quel sur la facture ; il est obligatoire depuis F-24 (sans lui, l'outil refuse d'écrire). Les lignes `Info` ne concernent que l'émetteur : on n'y range pas le SIRET d'une école.
 
 `Adresse L3` sert au pays. L'encadré destinataire n'offre que 4 lignes : ville et pays sont réunis sur une seule (`00000 VILLE-EXEMPLE, France`).
 
