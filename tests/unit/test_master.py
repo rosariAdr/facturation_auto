@@ -1,4 +1,4 @@
-"""Lecture sûre du MASTER (F-11 ; banque de tests : T-MST-01 à T-MST-07, T-MST-17 à T-MST-19).
+"""Lecture sûre du MASTER (F-11 ; banque de tests : T-MST-01 à T-MST-07, T-MST-17 à T-MST-19, T-MST-21).
 
 Tests d'acceptation écrits avant l'implémentation : chaque test importe `facturation.master`
 lui-même, pour que son absence fasse échouer les tests sans bloquer la collecte des autres.
@@ -236,3 +236,53 @@ def test_t_mst_19_dimension_declaree_fausse(master, remplacement):
     lu = _module().lire_master(master)
     assert lu.coordonnees == attendu.coordonnees
     assert [s["N°_Facture"] for s in lu.sessions] == ["R_ABC001", "R_ABC002"]
+
+
+def test_t_mst_21a_ouverture_refusee_par_le_systeme(master, monkeypatch):
+    """T-MST-21 — `PermissionError` à l'ouverture (classeur verrouillé par Excel, droits) : `MasterVerrouille`
+    « fermez le classeur », pas une trace brute."""
+    module = _module()
+    assert hasattr(module, "load_workbook"), "le module n'ouvre plus le classeur par `load_workbook`"
+
+    def refus(chemin, *args, **kwargs):
+        raise PermissionError(13, "Permission denied", str(chemin))
+
+    monkeypatch.setattr(module, "load_workbook", refus)
+    with pytest.raises(Exception) as exc:
+        module.lire_master(master)
+    assert isinstance(exc.value, module.MasterVerrouille), repr(exc.value)
+    assert "fermez le classeur" in str(exc.value).lower(), str(exc.value)
+
+
+def _abimer(chemin: Path, partie: str, contenu: bytes | None):
+    """Remplace une partie de l'archive xlsx par `contenu`, ou la retire si `contenu` est None."""
+    temporaire = chemin.with_suffix(".tmp")
+    with zipfile.ZipFile(chemin) as source, zipfile.ZipFile(temporaire, "w", zipfile.ZIP_DEFLATED) as copie:
+        assert partie in source.namelist(), partie  # la garde ne passe pas à vide
+        for info in source.infolist():
+            if info.filename != partie:
+                copie.writestr(info, source.read(info.filename))
+            elif contenu is not None:
+                copie.writestr(info, contenu)
+    shutil.move(temporaire, chemin)
+
+
+@pytest.mark.parametrize(
+    ("partie", "contenu"),
+    [
+        ("xl/workbook.xml", None),
+        ("[Content_Types].xml", None),
+        ("xl/workbook.xml", b"<workbook pas du xml"),
+        ("xl/worksheets/sheet1.xml", b"<worksheet pas du xml"),
+    ],
+    ids=["sans-workbook", "sans-content-types", "workbook-corrompu", "feuille-corrompue"],
+)
+def test_t_mst_21b_xlsx_abime(master, partie, contenu):
+    """T-MST-21 — un xlsx abîmé (partie absente, XML corrompu, y compris dans une feuille lue plus tard) :
+    `MasterInvalide` qui nomme le fichier, pas un `KeyError` ni un `ParseError` bruts."""
+    module = _module()
+    _abimer(master, partie, contenu)
+    with pytest.raises(Exception) as exc:
+        module.lire_master(master)
+    assert isinstance(exc.value, module.MasterInvalide), repr(exc.value)
+    assert master.name in str(exc.value), str(exc.value)

@@ -1,4 +1,4 @@
-"""Écriture sûre du MASTER (F-11, ADR013, ADR032 ; banque de tests : T-MST-08 à T-MST-16).
+"""Écriture sûre du MASTER (F-11, ADR013, ADR032 ; banque de tests : T-MST-08 à T-MST-16, T-MST-20).
 
 Tests d'acceptation écrits avant l'implémentation : chaque test importe `facturation.master`
 lui-même. Classeurs fictifs créés dans `tmp_path`.
@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import importlib
 import re
+import subprocess
+import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -227,3 +229,39 @@ def test_t_mst_16_verrou_vide_ou_illisible_refuse(master, contenu):
     erreur = _refus_sans_effet(master)
     assert verrou.name in str(erreur), str(erreur)
     assert verrou.read_bytes() == contenu
+
+
+def test_t_mst_20_verrou_du_meme_poste_tenu_par_une_autre_instance(master):
+    """T-MST-20 — verrou du même poste dont le `pid` est celui d'un autre processus vivant : refus (« une autre
+    instance de l'outil écrit déjà sur ce poste »), verrou intact. Le même verrou, une fois ce processus
+    terminé, est remplacé avec un avertissement (T-MST-12 couvre le `pid` du processus courant).
+
+    Le verrou est authentique (posé par `ecriture_master`) ; seule sa ligne `pid` est réécrite.
+    """
+    ecriture_master = _ecriture_master()
+    verrou = master.with_suffix(".verrou")
+    with ecriture_master(master, poste="POSTE-A"):
+        authentique = verrou.read_text(encoding="utf-8")
+
+    autre = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        texte, n = re.subn(r"(?m)^([ \t]*pid[ \t]*=[ \t]*)\d+[ \t]*$",rf"\g<1>{autre.pid}", authentique)
+        assert n == 1, f"ligne `pid` introuvable dans le verrou : {authentique!r}"  # la garde ne passe pas à vide
+        verrou.write_text(texte, encoding="utf-8", newline="\n")
+        tenu = verrou.read_bytes()
+        assert autre.poll() is None, "le processus témoin s'est arrêté trop tôt"
+
+        erreur = _refus_sans_effet(master, poste="POSTE-A")
+        assert "autre instance" in str(erreur).lower(), str(erreur)
+        assert verrou.read_bytes() == tenu
+    finally:
+        autre.kill()
+        autre.wait(timeout=30)
+
+    sauvegardes = _sauvegardes(master)
+    with pytest.warns(UserWarning) as avertissements:
+        with ecriture_master(master, poste="POSTE-A"):
+            _ecrire_une_seance(master)
+    assert any("POSTE-A" in str(a.message) for a in avertissements), [str(a.message) for a in avertissements]
+    assert len(_sauvegardes(master)) == len(sauvegardes) + 1
+    assert not verrou.exists()
