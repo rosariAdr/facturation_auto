@@ -381,6 +381,8 @@ def _facture_en_memoire(racine: Path):
     fmt.apply_metadata(ws, n_facture="A_ECOLEA001", date_emission=date(2026, 10, 1), entite="ALPHA")
     fmt.place_sessions(ws, ecole_name="ECOLE A", groups=GROUPES, entite="ALPHA")
     fmt.apply_rib(ws, entite="ALPHA")
+    # verifier_facture contrôle toujours l'échéance, le NDA et la ligne de contrat (F-24).
+    fmt.apply_mentions(ws, entite="ALPHA", date_emission=date(2026, 10, 1))
     return ws, dest
 
 

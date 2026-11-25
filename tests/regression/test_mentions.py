@@ -1,4 +1,4 @@
-"""Mentions légales et échéance de la facture (F-24, ADR030 ; banque de tests : T-MEN-01 à T-MEN-15).
+"""Mentions légales et échéance de la facture (F-24, ADR030 ; banque de tests : T-MEN-01 à T-MEN-20).
 
 Tests d'acceptation écrits avant l'implémentation. Ils fixent le contrat de
 `calculer_echeance`, `emetteur_porte_ei`, `apply_metadata(ref_contrat=…)`,
@@ -110,30 +110,43 @@ def test_t_men_02_echeance_donnee_prioritaire():
 
 
 @pytest.mark.unit
+def test_t_men_18_echeance_anterieure_a_l_emission_refusee():
+    """T-MEN-18 — une échéance antérieure à la date d'émission est refusée ; le jour même est accepté."""
+    with pytest.raises(ValueError):
+        fmt.calculer_echeance(EMISSION, echeance=date(2026, 11, 30))
+    assert fmt.calculer_echeance(EMISSION, echeance=EMISSION) == EMISSION
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize(
     "nom",
     [
         "PRÉNOM NOM EI",
         "Prénom Nom ei",
         "Prénom Nom - EI",
+        "Prénom Nom EI ",
+        "  Prénom Nom EI",
         "Prénom Nom Entrepreneur individuel",
         "Prénom Nom, entrepreneur individuel",
         "Prénom Nom (ENTREPRENEUR INDIVIDUEL)",
     ],
+    ids=["majuscules", "minuscules", "tiret", "espace-final", "espaces-en-tete", "toutes-lettres",
+         "toutes-lettres-virgule", "toutes-lettres-majuscules"],
 )
 def test_t_men_03_emetteur_porte_ei(nom):
-    """T-MEN-03 — « EI » en fin de nom, ou « Entrepreneur individuel » n'importe où, sans tenir compte de la casse."""
+    """T-MEN-03 — « EI » en fin de nom, ou « Entrepreneur individuel » n'importe où, sans tenir compte
+    de la casse ni des espaces en début et en fin de nom."""
     assert fmt.emetteur_porte_ei(nom) is True
 
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
     "nom",
-    ["Prénom Nom", "", "Prénom NOMEI", "Prénom Nom EIRL", "EI Prénom Nom", "Prénom Entrepreneur"],
-    ids=["sans-mention", "vide", "ei-colle", "eirl", "ei-en-tete", "entrepreneur-seul"],
+    ["Prénom Nom", "", "Prénom NOMEI", "Prénom Nom EIRL", "EI Prénom Nom", "Prénom Entrepreneur", "Prénom Nom E.I."],
+    ids=["sans-mention", "vide", "ei-colle", "eirl", "ei-en-tete", "entrepreneur-seul", "e-point-i-point"],
 )
 def test_t_men_04_emetteur_sans_ei(nom):
-    """T-MEN-04 — « EI » doit être un mot entier en fin de nom ; un nom sans la mention est refusé."""
+    """T-MEN-04 — « EI » doit être un mot entier en fin de nom ; « E.I. » ou un nom sans la mention est refusé."""
     assert fmt.emetteur_porte_ei(nom) is False
 
 
@@ -184,6 +197,15 @@ def test_t_men_08_echeance_donnee_imprimee(racine_fictive):
     assert ws["C91"].value == "Échéance : 15/01/2027"
 
 
+def test_t_men_19_indemnite_fusionnee_c94_k94(racine_fictive):
+    """T-MEN-19 — la ligne de l'indemnité est fusionnée sur C94:K94, comme les pénalités sur C93:K93."""
+    ws = _facture_minimale()
+    fmt.apply_mentions(ws, entite=ENTITE, date_emission=EMISSION)
+    fusions = [str(plage) for plage in ws.merged_cells.ranges]
+    assert "C94:K94" in fusions, fusions
+    assert "C93:K93" in fusions, fusions
+
+
 # ──────────────────────────────────────────────────────────────────────
 # apply_metadata — ligne du n° de contrat
 # ──────────────────────────────────────────────────────────────────────
@@ -223,10 +245,12 @@ def test_t_men_11_zone_d_impression_jusqu_a_la_ligne_94(racine_fictive):
     assert ws.print_area.endswith("!$A$1:$R$94"), ws.print_area
 
 
+SEANCES_62 = [(date(2026, 11, 2) + timedelta(days=i % 28), 1.0, 50.0) for i in range(62)]
+
+
 def test_t_men_12_decalage_au_dela_de_60_seances(racine_fictive):
     """T-MEN-12 — 62 séances : deux lignes insérées, les mentions descendent de deux lignes."""
-    seances = [(date(2026, 11, 2) + timedelta(days=i % 28), 1.0, 50.0) for i in range(62)]
-    ws = _facture_minimale([("M1 S1", "Module A", seances)])
+    ws = _facture_minimale([("M1 S1", "Module A", SEANCES_62)])
     fmt.apply_mentions(ws, entite=ENTITE, date_emission=EMISSION, echeance=date(2027, 1, 15))
 
     assert ws["O82"].value == TOTAL_HT
@@ -239,6 +263,25 @@ def test_t_men_12_decalage_au_dela_de_60_seances(racine_fictive):
     assert ws["C95"].value == PENALITES
     assert ws["C96"].value == INDEMNITE
     assert _anciens_libelles(ws) == []
+
+
+def test_t_men_16_net_a_payer_suit_le_total_decale(racine_fictive):
+    """T-MEN-16 — 62 séances : le net à payer (E85) reprend le total décalé (Q82), pas l'ancienne cellule Q80."""
+    ws = _facture_minimale([("M1 S1", "Module A", SEANCES_62)])
+    assert ws["Q82"].value == "=SUM(Q20:R81)"  # total recalculé par place_sessions
+    fmt.apply_mentions(ws, entite=ENTITE, date_emission=EMISSION)
+    assert ws["E85"].value == "=Q82"
+
+
+def test_t_men_17_zone_d_impression_suit_le_decalage(racine_fictive):
+    """T-MEN-17 — 62 séances : l'impression va jusqu'à la dernière mention décalée (ligne 96).
+
+    Ordre d'appel du script : place_sessions, apply_mentions, puis apply_print_setup.
+    """
+    ws = _facture_minimale([("M1 S1", "Module A", SEANCES_62)])
+    fmt.apply_mentions(ws, entite=ENTITE, date_emission=EMISSION)
+    fmt.apply_print_setup(ws, entite=ENTITE)
+    assert ws.print_area.endswith("!$A$1:$R$96"), ws.print_area
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -307,3 +350,28 @@ def test_t_men_15_verifier_facture_echeance_nda_contrat(racine_fictive, cellule,
     ws[cellule] = valeur
     ecarts = _verifier(ws, dest)
     assert len(ecarts) == 1 and ecarts[0].startswith(f"ERREUR sur cellule {cle}"), ecarts
+
+
+@pytest.mark.parametrize(
+    ("cellule", "valeur", "cle"),
+    [
+        (None, None, None),
+        ("C91", "Échéance : 01/01/2027", "echeance"),
+        ("D15", "CT-INATTENDU", "contrat"),
+    ],
+    ids=["conforme", "echeance-par-defaut", "contrat-inattendu"],
+)
+def test_t_men_20_verifier_facture_controle_toujours(racine_fictive, cellule, valeur, cle):
+    """T-MEN-20 — sans `echeance` ni `ref_contrat`, le contrôle a lieu quand même : échéance attendue
+    = émission + 30 jours, ligne 15 attendue vide."""
+    ws, dest = _facture_complete(ref_contrat=None, echeance=None)
+    if cellule is not None:
+        ws[cellule] = valeur
+    ecarts = fmt.verifier_facture(
+        ws, entite=ENTITE, n_facture="R_ECO001", date_emission=EMISSION, dest=dest,
+        ecole_name=ECOLE, groups=GROUPES,
+    )
+    if cle is None:
+        assert ecarts == []
+    else:
+        assert len(ecarts) == 1 and ecarts[0].startswith(f"ERREUR sur cellule {cle}"), ecarts

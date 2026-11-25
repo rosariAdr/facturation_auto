@@ -1,7 +1,7 @@
 """Scripts et commande `facturation` sur données fictives.
 
-Banque de tests : T-CLI-01 à T-CLI-07, T-COH-01, T-VER-01 à T-VER-04, T-CFG-02, T-CFG-03.
-T-CLI-03 à 07 et T-VER-03, 04 : mentions légales et échéance (F-24, ADR030).
+Banque de tests : T-CLI-01 à T-CLI-08, T-COH-01, T-VER-01 à T-VER-04, T-CFG-02, T-CFG-03.
+T-CLI-03 à 08 et T-VER-03, 04 : mentions légales et échéance (F-24, ADR030).
 """
 
 from __future__ import annotations
@@ -285,6 +285,21 @@ def test_t_cli_07_refus_emetteur_sans_ei(tmp_path):
     res = _lancer("scripts/nouvelle_facture.py", str(SPEC_EXEMPLE), "--data-root", str(racine))
     assert res.returncode == 1, res.stdout + res.stderr
     assert "Écriture refusée" in res.stderr and re.search(MENTION_EI, res.stderr), res.stderr
+    assert not (racine / "ROSARI" / "ABC").exists()
+
+
+@pytest.mark.parametrize(
+    ("master", "cause"),
+    [({"nda": None}, r"NDA"), ({"nom_emetteur": "FORMATEUR FICTIF ROSARI"}, MENTION_EI)],
+    ids=["sans-nda", "sans-ei"],
+)
+def test_t_cli_08_refus_des_l_apercu(tmp_path, master, cause):
+    """T-CLI-08 — NDA manquant ou émetteur sans « EI » : refus dès le `--dry-run`, code 1, cause nommée, rien d'écrit."""
+    racine = tmp_path / "donnees"
+    creer_master(racine, **master)
+    res = _lancer("scripts/nouvelle_facture.py", str(SPEC_EXEMPLE), "--data-root", str(racine), "--dry-run")
+    assert res.returncode == 1, res.stdout + res.stderr
+    assert "Écriture refusée" in res.stderr and re.search(cause, res.stderr), res.stderr
     assert not (racine / "ROSARI" / "ABC").exists()
 
 
