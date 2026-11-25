@@ -2,6 +2,30 @@
 
 Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/). Versions : `0.x` tant que la v2 n'est pas en service.
 
+## [Unreleased]
+
+### Corrigé (fusionné sur `dev` le 21/11/2026)
+- `nouvelle_facture.py` refuse d'écraser une facture existante (onglet ou numéro déjà présent).
+- Entité exigée partout ; préfixe ou dossier d'une autre entité refusés.
+- Facture bloquée si le destinataire n'a pas d'adresse.
+- Contrôle après écriture vérifié : sortie en erreur en cas d'écart.
+- Aperçu : émetteur et libellé complet affichés.
+- `check_coherence.py` signale des heures facturées au-delà des heures dispensées.
+- Profil : une adresse iCal collée dans le profil est refusée, sans être recopiée.
+- Scripts et tests : le paquet de ce dépôt est toujours celui importé.
+
+### Modifié
+- CI déclenchée sur `dev` et les branches `feat/fix/chore`, avec Python 3.11 ; `AGENTS.md` ajouté.
+
+### Documentation (23/11/2026, cadrage)
+- `references/ADR.md` : toutes les décisions dans le dépôt (ADR012–024 rapatriés de Notion, ADR025–033 ajoutés, statuts à jour).
+- Nouveaux : `references/ROADMAP.md`, `references/GLOSSAIRE.md`, `references/RECETTE_DOC.md`.
+- Réécrits : `PROC00_pcf.md` (aujourd'hui / cible du lot 1), `MASTER_SCHEMA.md` (v2), `FORMAT.md` (mentions de l'ADR030), `ONBOARDING.md` (MASTER v2, plus de `CONTEXT.md`), `README.md` (ce qui est disponible, prévu ou à l'état d'idée ; où vit quoi ; exemple Python corrigé), `SKILL.md` (aiguillage).
+- `AGENTS.md` §7 : où vit quoi, liste des documents de référence, durée de la porte sur le PC d'Adrian.
+
+### Retiré
+- Données réelles des documents de référence et de l'exemple par bon de commande, renommé `examples/factures_par_bon_de_commande.py` (données fictives, comportement inchangé). Restent à traiter : `examples/spec_exemple.json`, les tests et deux docstrings, liés entre eux (ticket à part).
+
 ## [0.2.0.dev0] — lot 0, socle (en cours)
 
 ### Ajouté
