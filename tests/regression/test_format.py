@@ -1,9 +1,9 @@
 """Non-régression du format des factures (banque de tests : T-FMT-01 à T-FMT-08).
 
 T-FMT-01 à 06 reprennent les tests de la v1 (`scripts/test_pcf_format.py`), sur un
-MASTER fictif. T-FMT-07 trace les défauts relevés le 26/10/2026 : marqué xfail
-strict tant que F-18 (fiabilisation du gabarit) n'est pas livré ; le jour où il
-passe, pytest échoue pour rappeler de retirer le marqueur.
+MASTER fictif. T-FMT-07 trace les défauts relevés le 26/10/2026 ; ses marqueurs xfail
+sont retirés : c'est un critère d'acceptation de F-18 (fiabilisation du gabarit), suite
+des tests dans `test_gabarit.py` (T-FMT-09 et suivants).
 """
 
 from __future__ import annotations
@@ -177,12 +177,16 @@ def test_t_fmt_08_clone_fidele_au_gabarit():
 
 
 def _facture_17_seances(racine):
-    """Facture fictive longue : 17 séances, 4 modules répartis sur 3 promotions."""
+    """Facture fictive longue, complète comme la facture pilote : 17 séances, 4 modules répartis
+    sur 3 promotions, bon de commande, contrat et mentions légales (ADR030)."""
     wb = _classeur()
     ws = fmt.clone_template(wb, "R_ECO999 Sept 2026", entite="ROSARI")
     fmt.apply_emetteur(ws, entite="ROSARI")
     fmt.apply_destinataire(ws, dest=fmt.get_destinataire("ECO", entite="ROSARI"), entite="ROSARI")
-    fmt.apply_metadata(ws, n_facture="R_ECO999", date_emission=date(2026, 10, 1), entite="ROSARI")
+    fmt.apply_metadata(
+        ws, n_facture="R_ECO999", date_emission=date(2026, 10, 1), entite="ROSARI",
+        ref_bon_commande="BC-EXEMPLE-0001", ref_contrat="CT-EXEMPLE-0001",
+    )
     j = lambda n: date(2026, 9, n)  # noqa: E731
     groups = [
         ("M1 S1", "Module A : notions fondamentales du cours", [(j(n), 3.5, 60) for n in (9, 11, 15, 21, 28)]),
@@ -191,12 +195,12 @@ def _facture_17_seances(racine):
         ("M2 S2", "Module D : synthèse et évaluation", [(j(n), 3.5, 65) for n in (23, 23, 24, 24, 25, 25)]),
     ]
     fmt.place_sessions(ws, ecole_name="ÉCOLE FICTIVE B", groups=groups, entite="ROSARI")
+    fmt.apply_mentions(ws, entite="ROSARI", date_emission=date(2026, 10, 1))
     fmt.apply_rib(ws, entite="ROSARI")
     fmt.apply_print_setup(ws, entite="ROSARI")
     return wb, ws
 
 
-@pytest.mark.xfail(raises=AssertionError, reason="T-FMT-07 / F-18 : lignes 27 à 79 du gabarit sans format de nombre")
 def test_t_fmt_07a_formats_homogenes_sur_toutes_les_lignes(racine_fictive):
     """T-FMT-07a — heures, taux et totaux gardent le même format au-delà de la 7e séance."""
     _, ws = _facture_17_seances(racine_fictive)
@@ -208,7 +212,6 @@ def test_t_fmt_07a_formats_homogenes_sur_toutes_les_lignes(racine_fictive):
 
 
 @pytest.mark.skipif(trouver_libreoffice() is None, reason="LibreOffice absent")
-@pytest.mark.xfail(raises=AssertionError, reason="T-FMT-07 / F-18 : les mentions légales passent en page 2")
 def test_t_fmt_07b_rendu_pdf_sur_une_page(racine_fictive, tmp_path):
     """T-FMT-07b — la facture de 17 séances tient sur une page, mentions légales comprises."""
     wb, _ = _facture_17_seances(racine_fictive)
