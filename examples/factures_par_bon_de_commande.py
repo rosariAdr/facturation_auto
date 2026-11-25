@@ -134,6 +134,9 @@ def generate_all():
             entite=ENTITE,
             masquer_jour=True,
         )
+        # Mentions de l'ADR030 : total HT, net à payer, TVA, NDA, échéance (+30 jours),
+        # pénalités, indemnité de 40 €. Exige Info / NDA dans MASTER.Coordonnées.
+        fmt.apply_mentions(ws, entite=ENTITE, date_emission=DATE_EMISSION)
         fmt.apply_rib(ws, entite=ENTITE)
         fmt.apply_print_setup(ws, entite=ENTITE)
 
