@@ -1,6 +1,6 @@
 """Scripts et commande `facturation` sur données fictives.
 
-Banque de tests : T-CLI-01 à T-CLI-09, T-COH-01, T-VER-01 à T-VER-04, T-CFG-02, T-CFG-03.
+Banque de tests : T-CLI-01 à T-CLI-09, T-COH-01, T-VER-01 à T-VER-05, T-CFG-02, T-CLI-11, T-CFG-03.
 T-CLI-03 à 09 et T-VER-03, 04 : mentions légales et échéance (F-24, ADR030).
 """
 
@@ -381,3 +381,21 @@ def test_t_cli_11_agenda_lire_un_fichier_local(tmp_path):
     assert re.search(r"3[.,]5|3 ?h ?30", ligne_du("05/11/2026", "14:00")), "durée de 3 h 30 absente"
     for absent in ("03/11/2026", "11/11/2026", "Jour férié fictif", "27/10/2026", "15/12/2026", "annulé"):
         assert absent not in res.stdout, absent
+
+
+def test_t_ver_05_verifier_accepte_un_agenda_secret_avec_bom(tmp_path):
+    """T-VER-05 — `profil verifier` : un `agenda.secret` retouché au Bloc-notes ou sous PowerShell 5
+    (BOM UTF-8, fin de ligne Windows) n'est pas signalé comme invalide, et l'adresse ne s'affiche pas."""
+    jeton = "private-0123456789abcdef"
+    adresse = f"https://calendar.example.org/calendar/ical/personne%40example.org/{jeton}/basic.ics"
+    racine = tmp_path / "donnees"
+    creer_master(racine)
+    profil = tmp_path / "profil.toml"
+    profil.write_text(config.rediger("Personne A", "ROSARI", str(racine)), encoding="utf-8")
+    secret = config.enregistrer_adresse_ical(config.charger(profil), adresse)
+    secret.write_bytes(b"\xef\xbb\xbf" + adresse.encode("ascii") + b"\r\n")
+    res = _lancer("-m", "facturation", "profil", "verifier", "--profil", str(profil))
+    for fragment in (jeton, "calendar.example.org"):
+        assert fragment not in res.stdout + res.stderr, f"adresse affichée : {fragment}"
+    agenda = [ligne for ligne in res.stdout.splitlines() if "Agenda —" in ligne]
+    assert len(agenda) == 1 and agenda[0].startswith("[OK]"), res.stdout

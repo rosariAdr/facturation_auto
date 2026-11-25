@@ -1,4 +1,4 @@
-"""Lecture de l'agenda iCal (F-10, ADR019 ; banque de tests : T-AGD-02 à T-AGD-11).
+"""Lecture de l'agenda iCal (F-10, ADR019 ; banque de tests : T-AGD-02 à T-AGD-13).
 
 T-AGD-01 est déjà réservé par ADR019 (délai de mise à jour du flux iCal, contrôle manuel).
 
@@ -256,7 +256,8 @@ def test_t_agd_10_telechargement_simule(tmp_path, monkeypatch, sans_reseau):
 def test_t_agd_11_erreur_claire_sans_jamais_afficher_l_adresse(tmp_path, monkeypatch, capsys, caplog, sans_reseau,
                                                                 contenu_secret, reponse):
     """T-AGD-11 — adresse absente, invalide ou injoignable : une erreur claire, et l'adresse n'apparaît
-    ni dans le message, ni dans les causes affichées, ni à l'écran, ni dans le journal."""
+    ni dans le message, ni à l'écran, ni dans le journal ; l'erreur d'origine (qui la porte) n'est ni
+    enchaînée ni affichée, et aucun attribut de l'exception levée ne la contient."""
     agenda = _agenda()
     _simuler(monkeypatch, agenda, reponse)
     with pytest.raises(Exception) as exc:
@@ -265,7 +266,67 @@ def test_t_agd_11_erreur_claire_sans_jamais_afficher_l_adresse(tmp_path, monkeyp
     assert not isinstance(exc.value, erreurs_de_programmation), repr(exc.value)
     if contenu_secret is None:
         assert "agenda.secret" in str(exc.value)
+    _aucune_fuite(exc.value, capsys, caplog)
+
+
+def _attributs_secrets(exc: BaseException) -> list[str]:
+    """Attributs de l'exception (args, champs, propriétés, notes) dont la valeur cite l'adresse.
+
+    Un `HTTPError` propagé tel quel ne cite l'adresse ni dans `str` ni dans `repr`, mais dans `.url`
+    et `.filename` : seul ce parcours des attributs le voit.
+    """
+    valeurs = {"args": exc.args, "__notes__": getattr(exc, "__notes__", None), **vars(exc)}
+    for nom in dir(exc):
+        if nom.startswith("__") or nom in valeurs:
+            continue
+        try:
+            valeur = getattr(exc, nom)
+        except Exception:  # propriété qui ne s'évalue pas sur cette instance
+            continue
+        if not callable(valeur):
+            valeurs[nom] = valeur
+    return sorted(
+        nom for nom, valeur in valeurs.items()
+        if any(f in texte for f in FRAGMENTS_SECRETS for texte in (str(valeur), repr(valeur)))
+    )
+
+
+def _aucune_fuite(exc: BaseException, capsys, caplog) -> None:
+    """L'adresse n'est ni dans les textes affichés, ni dans une cause affichée, ni dans un attribut."""
     sortie = capsys.readouterr()
-    affiche = [*_messages_affiches(exc.value), sortie.out, sortie.err, caplog.text]
+    affiche = [*_messages_affiches(exc), sortie.out, sortie.err, caplog.text]
     fuites = [f for f in FRAGMENTS_SECRETS for texte in affiche if f in texte]
     assert not fuites, f"adresse affichée : {sorted(set(fuites))}"
+    # Aucune erreur d'origine enchaînée qu'une trace afficherait (`raise … from None`, ou levée hors du `except`).
+    assert exc.__cause__ is None, f"cause enchaînée : {exc.__cause__!r}"
+    assert exc.__context__ is None or exc.__suppress_context__, f"contexte affiché : {exc.__context__!r}"
+    assert not _attributs_secrets(exc), f"attributs qui citent l'adresse : {_attributs_secrets(exc)}"
+
+
+@pytest.mark.parametrize("code", [500, 503])
+def test_t_agd_12_erreur_serveur_5xx(tmp_path, monkeypatch, capsys, caplog, sans_reseau, code):
+    """T-AGD-12 — le serveur répond 5xx : erreur claire (le code, réessayer plus tard), que la commande
+    `agenda lire` sait afficher, et l'adresse n'apparaît nulle part, même si la réponse la cite."""
+    agenda = _agenda()
+    erreur = urllib.error.HTTPError(
+        URL_FICTIVE, code, f"Erreur serveur pour {URL_FICTIVE}", None, io.BytesIO(URL_FICTIVE.encode("ascii")),
+    )
+    _simuler(monkeypatch, agenda, erreur)
+    with pytest.raises(Exception) as exc:
+        agenda.telecharger_ics(_profil(tmp_path, URL_FICTIVE + "\n"))
+    # `agenda lire` n'intercepte que AgendaIndisponible et ValueError : toute autre exception afficherait une trace.
+    assert isinstance(exc.value, agenda.AgendaIndisponible), repr(exc.value)
+    message = str(exc.value)
+    assert f"HTTP {code}" in message and "réessa" in message.lower(), message
+    _aucune_fuite(exc.value, capsys, caplog)
+
+
+def test_t_agd_13_agenda_secret_precede_d_un_bom(tmp_path, monkeypatch, sans_reseau):
+    """T-AGD-13 — un `agenda.secret` retouché au Bloc-notes ou sous PowerShell 5 (BOM UTF-8, fin de ligne
+    Windows) se lit quand même : l'adresse téléchargée est exactement celle du fichier, sans le BOM."""
+    agenda = _agenda()
+    appels = _simuler(monkeypatch, agenda, FIXTURE.read_bytes())
+    profil = _profil(tmp_path, None)
+    profil.agenda_fichier_url_secrete.write_bytes(b"\xef\xbb\xbf" + URL_FICTIVE.encode("ascii") + b"\r\n")
+    assert agenda.telecharger_ics(profil) == FIXTURE.read_bytes()
+    assert [adresse for adresse, _ in appels] == [URL_FICTIVE]
