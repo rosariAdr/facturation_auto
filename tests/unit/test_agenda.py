@@ -1,4 +1,4 @@
-"""Lecture de l'agenda iCal (F-10, ADR019 ; banque de tests : T-AGD-02 à T-AGD-13).
+"""Lecture de l'agenda iCal (F-10, ADR019 ; banque de tests : T-AGD-02 à T-AGD-14).
 
 T-AGD-01 est déjà réservé par ADR019 (délai de mise à jour du flux iCal, contrôle manuel).
 
@@ -20,6 +20,7 @@ Contenu de la fixture, sur octobre et novembre 2026 (heure de Paris) :
 from __future__ import annotations
 
 import dataclasses
+import http.client
 import importlib
 import io
 import socket
@@ -330,3 +331,30 @@ def test_t_agd_13_agenda_secret_precede_d_un_bom(tmp_path, monkeypatch, sans_res
     profil.agenda_fichier_url_secrete.write_bytes(b"\xef\xbb\xbf" + URL_FICTIVE.encode("ascii") + b"\r\n")
     assert agenda.telecharger_ics(profil) == FIXTURE.read_bytes()
     assert [adresse for adresse, _ in appels] == [URL_FICTIVE]
+
+
+URL_PORT_INVALIDE = f"https://calendar.example.org:abc/calendar/ical/{JETON}/basic.ics"  # passe la validation
+
+
+@pytest.mark.parametrize(
+    ("contenu_secret", "erreur"),
+    [
+        (URL_PORT_INVALIDE, http.client.InvalidURL("nonnumeric port: 'abc'")),
+        (URL_FICTIVE, http.client.InvalidURL(f"URL can't contain control characters. {URL_FICTIVE!r} (found at least ' ')")),
+    ],
+    ids=["port-non-numerique", "caractere-de-controle"],
+)
+def test_t_agd_14_adresse_refusee_par_http_client(tmp_path, monkeypatch, capsys, caplog, sans_reseau,
+                                                  contenu_secret, erreur):
+    """T-AGD-14 — une adresse qui passe la validation mais que `http.client` refuse (`InvalidURL`) : erreur
+    « adresse invalide » qui invite à la recopier, sans conseil de réessayer (inutile), et l'adresse n'apparaît
+    nulle part, même si l'erreur d'origine la cite."""
+    agenda = _agenda()
+    _simuler(monkeypatch, agenda, erreur)
+    with pytest.raises(Exception) as exc:
+        agenda.telecharger_ics(_profil(tmp_path, contenu_secret + "\n"))
+    assert isinstance(exc.value, agenda.AgendaIndisponible), repr(exc.value)
+    message = str(exc.value).lower()
+    assert "adresse invalide" in message, str(exc.value)
+    assert "réessa" not in message, str(exc.value)
+    _aucune_fuite(exc.value, capsys, caplog)

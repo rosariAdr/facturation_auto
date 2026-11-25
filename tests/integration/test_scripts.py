@@ -1,6 +1,6 @@
 """Scripts et commande `facturation` sur données fictives.
 
-Banque de tests : T-CLI-01 à T-CLI-09, T-COH-01, T-VER-01 à T-VER-05, T-CFG-02, T-CLI-11, T-CFG-03.
+Banque de tests : T-CLI-01 à T-CLI-09, T-COH-01, T-VER-01 à T-VER-06, T-CFG-02, T-CLI-11, T-CFG-03.
 T-CLI-03 à 09 et T-VER-03, 04 : mentions légales et échéance (F-24, ADR030).
 """
 
@@ -399,3 +399,33 @@ def test_t_ver_05_verifier_accepte_un_agenda_secret_avec_bom(tmp_path):
         assert fragment not in res.stdout + res.stderr, f"adresse affichée : {fragment}"
     agenda = [ligne for ligne in res.stdout.splitlines() if "Agenda —" in ligne]
     assert len(agenda) == 1 and agenda[0].startswith("[OK]"), res.stdout
+
+
+@pytest.mark.parametrize(
+    "contenu",
+    [
+        "https://calendar.example.org/calendar/ical/private-0123456789abcdef/basic.ics\r\n".encode("utf-16"),
+        b"\x00\xff\xfe\x81 calendar.example.org private-0123456789abcdef \x9d\x00",
+        b"https://calendar.example.org/calendar/ical/private-0123456789abcdef /basic.ics\n",
+    ],
+    ids=["utf-16", "binaire", "espace"],
+)
+def test_t_ver_06_verifier_signale_un_agenda_secret_inutilisable(tmp_path, contenu):
+    """T-VER-06 — `profil verifier` : un `agenda.secret` illisible (UTF-16, binaire) ou dont l'adresse contient
+    une espace donne une ERREUR claire qui nomme le fichier ; la commande ne plante pas et n'affiche pas l'adresse."""
+    racine = tmp_path / "donnees"
+    creer_master(racine)
+    profil = tmp_path / "profil.toml"
+    profil.write_text(config.rediger("Personne A", "ROSARI", str(racine)), encoding="utf-8")
+    secret = config.enregistrer_adresse_ical(
+        config.charger(profil), "https://calendar.example.org/calendar/ical/private-0123456789abcdef/basic.ics",
+    )
+    secret.write_bytes(contenu)
+    res = _lancer("-m", "facturation", "profil", "verifier", "--profil", str(profil))
+    assert "Traceback" not in res.stderr, res.stderr
+    for fragment in ("private-0123456789abcdef", "calendar.example.org"):
+        assert fragment not in res.stdout + res.stderr, f"adresse affichée : {fragment}"
+    agenda = [ligne for ligne in res.stdout.splitlines() if "Agenda —" in ligne]
+    assert len(agenda) == 1 and agenda[0].startswith("[ERREUR]"), res.stdout + res.stderr
+    assert "agenda.secret" in agenda[0], agenda[0]
+    assert res.returncode == 1, res.stdout + res.stderr
