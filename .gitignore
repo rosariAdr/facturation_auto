@@ -18,6 +18,8 @@
 # Export de l'agenda (contient tous les cours)
 *.ics
 *.ical
+# Exception : les agendas fictifs des tests (aucune donnée réelle)
+!tests/fixtures/*.ics
 # Emails enregistrés (brouillons de facture, pièces jointes)
 *.eml
 *.msg
