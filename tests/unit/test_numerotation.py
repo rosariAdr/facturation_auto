@@ -1,4 +1,4 @@
-"""Numérotation des factures (F-15, ADR002, ADR029 ; banque de tests : T-NUM-01 à T-NUM-16).
+"""Numérotation des factures (F-15, ADR002, ADR029 ; banque de tests : T-NUM-01 à T-NUM-17).
 
 Tests d'acceptation écrits avant l'implémentation : chaque test importe
 `facturation.numerotation` lui-même, pour que son absence fasse échouer les tests sans
@@ -273,3 +273,15 @@ def test_t_num_16_lire_numeros_trie_et_sans_doublon(tmp_path):
     numeros = _num().lire_numeros(master)
     assert isinstance(numeros, list)
     assert numeros == ["K_ABC001", "R_ABC001", "R_ABC002", "R_ABC003", "R_ECO002"]
+
+
+def test_t_num_17_numeros_en_minuscules_comptes_dans_la_serie():
+    """T-NUM-17 — la casse ne compte pas : `r_abc005`, `r_abc_007` ou `R_abc006` appartiennent à la série
+    `R_ABC` (sinon un numéro saisi en minuscules ferait proposer un numéro déjà attribué). Les autres préfixes
+    et écoles restent ignorés quelle que soit leur casse ; le numéro proposé est au format courant."""
+    num = _num()
+    assert _prochain(["R_ABC003", "r_abc005"]) == "R_ABC006"
+    assert _prochain(["R_ABC003", "r_abc_007"]) == "R_ABC008"
+    assert _prochain(["R_abc006"]) == "R_ABC007"
+    assert _prochain(["k_abc009", "r_abcd010", "r_eco011", "R_ABC002"]) == "R_ABC003"
+    assert num.numeros_manquants(["r_abc001", "R_ABC004", "r_Abc_003"], prefixe="R_", code_ecole="ABC") == ["R_ABC002"]
