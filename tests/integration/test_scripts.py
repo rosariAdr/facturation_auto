@@ -1,7 +1,7 @@
 """Scripts et commande `facturation` sur données fictives.
 
-Banque de tests : T-CLI-01 à T-CLI-08, T-COH-01, T-VER-01 à T-VER-04, T-CFG-02, T-CFG-03.
-T-CLI-03 à 08 et T-VER-03, 04 : mentions légales et échéance (F-24, ADR030).
+Banque de tests : T-CLI-01 à T-CLI-09, T-COH-01, T-VER-01 à T-VER-04, T-CFG-02, T-CFG-03.
+T-CLI-03 à 09 et T-VER-03, 04 : mentions légales et échéance (F-24, ADR030).
 """
 
 from __future__ import annotations
@@ -300,6 +300,23 @@ def test_t_cli_08_refus_des_l_apercu(tmp_path, master, cause):
     res = _lancer("scripts/nouvelle_facture.py", str(SPEC_EXEMPLE), "--data-root", str(racine), "--dry-run")
     assert res.returncode == 1, res.stdout + res.stderr
     assert "Écriture refusée" in res.stderr and re.search(cause, res.stderr), res.stderr
+    assert not (racine / "ROSARI" / "ABC").exists()
+
+
+@pytest.mark.parametrize(
+    "echeance", ["2026-09-29", "30/10/2026"], ids=["anterieure-a-l-emission", "mal-formee"],
+)
+@pytest.mark.parametrize("options", [(), ("--dry-run",)], ids=["ecriture", "dry-run"])
+def test_t_cli_09_refus_echeance_invalide(tmp_path, echeance, options):
+    """T-CLI-09 — échéance de la spec antérieure à l'émission (30/09/2026) ou hors format AAAA-MM-JJ :
+    refus propre, code 1, sans trace d'exception, rien d'écrit."""
+    racine = tmp_path / "donnees"
+    creer_master(racine)
+    spec = _spec(tmp_path, echeance=echeance)
+    res = _lancer("scripts/nouvelle_facture.py", str(spec), "--data-root", str(racine), *options)
+    assert res.returncode == 1, res.stdout + res.stderr
+    assert "Écriture refusée" in res.stderr and "echeance" in res.stderr, res.stderr
+    assert "Traceback" not in res.stderr, res.stderr
     assert not (racine / "ROSARI" / "ABC").exists()
 
 
