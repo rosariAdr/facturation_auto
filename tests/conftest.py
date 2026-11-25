@@ -1,7 +1,8 @@
 """Fixtures partagées : données fictives uniquement (aucune donnée réelle dans le dépôt).
 
 `racine_fictive` construit dans un dossier temporaire une racine de données complète :
-`ENTITE/ENTITE_MASTER.xlsx` avec émetteur, SIRET, IBAN et BIC factices, deux
+`ENTITE/ENTITE_MASTER.xlsx` avec un émetteur entrepreneur individuel (nom terminé par
+« EI », ADR030), SIRET, IBAN, BIC et n° de déclaration d'activité factices, deux
 destinataires renseignés et un destinataire vide.
 """
 
@@ -30,19 +31,38 @@ ENTETES = {
 }
 
 
-def creer_master(racine: Path, entite: str = "ROSARI", cours: list[list] | None = None) -> Path:
-    """Écrit un MASTER fictif sous `racine/entite/` et renvoie son chemin."""
+# Texte fictif de la ligne `Info` / `NDA`, imprimé tel quel sur la facture (ADR030).
+NDA_FICTIF = "Déclaration d'activité enregistrée sous le n° 00000000000 auprès du préfet de région Exemple"
+
+
+def creer_master(
+    racine: Path,
+    entite: str = "ROSARI",
+    cours: list[list] | None = None,
+    *,
+    nom_emetteur: str | None = None,
+    nda: str | None = NDA_FICTIF,
+) -> Path:
+    """Écrit un MASTER fictif sous `racine/entite/` et renvoie son chemin.
+
+    Args:
+        nom_emetteur: nom de l'émetteur ; par défaut « FORMATEUR FICTIF <ENTITE> EI ».
+        nda: texte de la ligne `Info` / `NDA` ; None pour l'omettre.
+    """
     dossier = racine / entite
     dossier.mkdir(parents=True, exist_ok=True)
     wb = Workbook()
     wb.remove(wb.active)
     ws = wb.create_sheet("Coordonnées")
     ws.append(["Type", "Code", "Nom / Raison sociale", "Adresse L1", "Adresse L2", "Adresse L3", "Email", "Téléphone"])
-    ws.append(["Émetteur", entite, f"FORMATEUR FICTIF {entite}", "1 rue de l'Exemple,", "00000 Villefictive", "", "formateur@example.org", "+33600000000"])
+    nom = nom_emetteur if nom_emetteur is not None else f"FORMATEUR FICTIF {entite} EI"
+    ws.append(["Émetteur", entite, nom, "1 rue de l'Exemple,", "00000 Villefictive", "", "formateur@example.org", "+33600000000"])
     ws.append(["Info", entite, "SIRET", "00000000000000"])
     ws.append(["Info", entite, "IBAN", "FR76 0000 0000 0000 0000 0000 000"])
     ws.append(["Info", entite, "BIC", "TESTFRPP"])
     ws.append(["Info", entite, "TVA", "TVA non applicable - art. 293B CGI"])
+    if nda is not None:
+        ws.append(["Info", entite, "NDA", nda])
     ws.append(["Destinataire", "ABC", "ÉCOLE FICTIVE A", "10 avenue Test", "00000 TESTVILLE", "France", "compta@ecole-a.example"])
     ws.append(["Destinataire", "ECO", "ÉCOLE FICTIVE B", "20 rue Test", "00000 TESTVILLE", "", "factures@ecole-b.example"])
     ws.append(["Destinataire", "VIDE", "", "", "", "", ""])

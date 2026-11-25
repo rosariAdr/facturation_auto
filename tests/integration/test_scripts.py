@@ -1,9 +1,14 @@
-"""Scripts et commande `facturation` sur données fictives (T-CLI-01, T-CLI-02, T-COH-01, T-VER-01)."""
+"""Scripts et commande `facturation` sur données fictives.
+
+Banque de tests : T-CLI-01 à T-CLI-07, T-COH-01, T-VER-01 à T-VER-04, T-CFG-02, T-CFG-03.
+T-CLI-03 à 07 et T-VER-03, 04 : mentions légales et échéance (F-24, ADR030).
+"""
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -12,7 +17,7 @@ import pytest
 from openpyxl import load_workbook
 
 from facturation import config
-from tests.conftest import creer_master
+from tests.conftest import NDA_FICTIF, creer_master
 
 pytestmark = pytest.mark.integration
 
@@ -196,3 +201,110 @@ def test_lancer_fait_importer_le_paquet_de_ce_depot(tmp_path, autre_copie, monke
     res = _lancer(str(sonde))
     assert res.returncode == 0, res.stdout + res.stderr
     assert Path(res.stdout.strip()).resolve().parent == DEPOT / "facturation"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# F-24 — mentions légales et échéance (ADR030)
+# ──────────────────────────────────────────────────────────────────────
+
+CONTRAT = "CT-EXEMPLE-0001"
+# Un message de refus nomme la mention attendue : « EI » ou « Entrepreneur individuel ».
+MENTION_EI = r"\bEI\b|[Ee]ntrepreneur individuel"
+
+
+def _spec(tmp_path: Path, **surcharges) -> Path:
+    """Spec d'exemple, complétée des surcharges, écrite dans `tmp_path`."""
+    spec = json.loads(SPEC_EXEMPLE.read_text(encoding="utf-8"))
+    spec.update(surcharges)
+    chemin = tmp_path / "spec.json"
+    chemin.write_text(json.dumps(spec, ensure_ascii=False), encoding="utf-8")
+    return chemin
+
+
+def _valeur_apercu(sortie: str, etiquette: str) -> str | None:
+    """Valeur d'une ligne « Étiquette : valeur » de l'aperçu, ou None si la ligne manque."""
+    trouvee = re.search(rf"^{re.escape(etiquette)}\s*:\s*(.*)$", sortie, re.MULTILINE)
+    return trouvee.group(1).strip() if trouvee else None
+
+
+def _erreurs(sortie: str) -> list[str]:
+    """Lignes « [ERREUR] … » de `profil verifier`."""
+    return [ligne for ligne in sortie.splitlines() if ligne.startswith("[ERREUR]")]
+
+
+def test_t_cli_03_apercu_contrat_echeance_nda(tmp_path):
+    """T-CLI-03 — l'aperçu montre le n° de contrat, l'échéance donnée et la déclaration d'activité."""
+    racine = tmp_path / "donnees"
+    creer_master(racine)
+    spec = _spec(tmp_path, ref_contrat=CONTRAT, echeance="2026-11-15")
+    res = _lancer("scripts/nouvelle_facture.py", str(spec), "--data-root", str(racine), "--dry-run")
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert _valeur_apercu(res.stdout, "Contrat") == CONTRAT, res.stdout
+    assert _valeur_apercu(res.stdout, "Échéance") == "15/11/2026", res.stdout
+    assert _valeur_apercu(res.stdout, "NDA") == NDA_FICTIF, res.stdout
+
+
+def test_t_cli_04_apercu_echeance_par_defaut(tmp_path):
+    """T-CLI-04 — sans échéance dans la spec, l'aperçu annonce la date d'émission plus 30 jours."""
+    racine = tmp_path / "donnees"
+    creer_master(racine)
+    res = _lancer("scripts/nouvelle_facture.py", str(SPEC_EXEMPLE), "--data-root", str(racine), "--dry-run")
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert _valeur_apercu(res.stdout, "Échéance") == "30/10/2026", res.stdout  # émise le 30/09/2026
+
+
+def test_t_cli_05_ecriture_contrat_echeance_nda(tmp_path):
+    """T-CLI-05 — la facture écrite porte le contrat (ligne 15), l'échéance et la déclaration d'activité."""
+    racine = tmp_path / "donnees"
+    creer_master(racine)
+    spec = _spec(tmp_path, ref_contrat=CONTRAT, echeance="2026-11-15")
+    res = _lancer("scripts/nouvelle_facture.py", str(spec), "--data-root", str(racine))
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "OK — facture" in res.stdout
+    donnees = json.loads(spec.read_text(encoding="utf-8"))
+    ws = load_workbook(racine / donnees["fichier_sortie"])[donnees["onglet"]]
+    assert (ws["C15"].value, ws["D15"].value) == ("N° de contrat :", CONTRAT)
+    assert ws["C91"].value == "Échéance : 15/11/2026"
+    assert ws["C86"].value == NDA_FICTIF
+
+
+def test_t_cli_06_refus_sans_nda(tmp_path):
+    """T-CLI-06 — sans `Info` / `NDA` dans le MASTER : écriture refusée, code 1, rien d'écrit."""
+    racine = tmp_path / "donnees"
+    creer_master(racine, nda=None)
+    res = _lancer("scripts/nouvelle_facture.py", str(SPEC_EXEMPLE), "--data-root", str(racine))
+    assert res.returncode == 1, res.stdout + res.stderr
+    assert "Écriture refusée" in res.stderr and "NDA" in res.stderr, res.stderr
+    assert not (racine / "ROSARI" / "ABC").exists()
+
+
+def test_t_cli_07_refus_emetteur_sans_ei(tmp_path):
+    """T-CLI-07 — émetteur sans « EI » ni « Entrepreneur individuel » : écriture refusée, code 1, rien d'écrit."""
+    racine = tmp_path / "donnees"
+    creer_master(racine, nom_emetteur="FORMATEUR FICTIF ROSARI")
+    res = _lancer("scripts/nouvelle_facture.py", str(SPEC_EXEMPLE), "--data-root", str(racine))
+    assert res.returncode == 1, res.stdout + res.stderr
+    assert "Écriture refusée" in res.stderr and re.search(MENTION_EI, res.stderr), res.stderr
+    assert not (racine / "ROSARI" / "ABC").exists()
+
+
+def test_t_ver_03_verifier_signale_le_nda_manquant(tmp_path):
+    """T-VER-03 — `profil verifier` : ERREUR si `Info` / `NDA` manque dans le MASTER."""
+    racine = tmp_path / "donnees"
+    creer_master(racine, nda=None)
+    profil = tmp_path / "profil.toml"
+    profil.write_text(config.rediger("Personne A", "ROSARI", str(racine)), encoding="utf-8")
+    res = _lancer("-m", "facturation", "profil", "verifier", "--profil", str(profil))
+    assert res.returncode == 1, res.stdout + res.stderr
+    assert any("NDA" in ligne for ligne in _erreurs(res.stdout)), res.stdout
+
+
+def test_t_ver_04_verifier_signale_l_emetteur_sans_ei(tmp_path):
+    """T-VER-04 — `profil verifier` : ERREUR si le nom de l'émetteur ne porte pas « EI »."""
+    racine = tmp_path / "donnees"
+    creer_master(racine, nom_emetteur="FORMATEUR FICTIF ROSARI")
+    profil = tmp_path / "profil.toml"
+    profil.write_text(config.rediger("Personne A", "ROSARI", str(racine)), encoding="utf-8")
+    res = _lancer("-m", "facturation", "profil", "verifier", "--profil", str(profil))
+    assert res.returncode == 1, res.stdout + res.stderr
+    assert any(re.search(MENTION_EI, ligne) for ligne in _erreurs(res.stdout)), res.stdout
