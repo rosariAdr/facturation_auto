@@ -628,7 +628,7 @@ Sources à consulter pour la recette : Code de commerce, articles L441-9 et L441
 
 ### Conséquences
 - Gabarit et module : F-24 (`references/FORMAT.md`) ; données : `Coordonnées` et `Règles_facturation` (`references/MASTER_SCHEMA.md`) ; collecte : `references/ONBOARDING.md`
-- À appliquer dès les factures de novembre 2026, datées du 01/12/2026 : par le gabarit si F-24 est livré à temps, sinon par retouche avant l'envoi
+- S'applique à partir des factures de décembre 2026, préparées en décembre. Les factures d'octobre et de novembre 2026 sont envoyées en l'état (décision du 25/11/2026)
 - La facture historique auditée reste un constat d'audit ; la rectifier est une décision métier distincte
 - Si la franchise en base cesse (dépassement de seuil) ou si l'attestation d'exonération formation est accordée, les mentions de TVA changent : un nouvel ADR le décidera
 
