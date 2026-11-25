@@ -208,6 +208,13 @@ def telecharger_ics(profil: config.Profil) -> bytes:
             f"agenda injoignable{_nature(exc.reason)} : vérifiez la connexion Internet "
             "(ou le proxy), puis réessayez"
         ) from None
+    except http.client.InvalidURL:
+        # Avant HTTPException, dont elle hérite : une adresse refusée par http.client (port non
+        # numérique, caractère de contrôle) ne se répare pas en réessayant. Son texte cite l'adresse.
+        raise AgendaIndisponible(
+            f"adresse invalide dans {_nom_secret(profil)} : recopiez-la depuis Google Agenda ; "
+            f"{_MESSAGE_ADRESSE} (adresse non affichée)"
+        ) from None
     except (OSError, http.client.HTTPException) as exc:
         raise AgendaIndisponible(
             f"téléchargement de l'agenda interrompu{_nature(exc)} : réessayez"
