@@ -110,6 +110,18 @@ def _verifier_donnees(profil: Profil) -> list[Constat]:
         f"émetteur « {donnees['emetteur']['nom']} », SIRET, IBAN et BIC présents",
     ))
 
+    # Mentions obligatoires de la facture (ADR030) : sans elles, toute facture est bloquée.
+    if not fmt.emetteur_porte_ei(donnees["emetteur"]["nom"]):
+        constats.append(Constat(
+            ERREUR, "Coordonnées",
+            f"le nom de l'émetteur « {donnees['emetteur']['nom']} » ne porte pas la mention "
+            "« EI » ni « Entrepreneur individuel » (ADR030) : factures bloquées",
+        ))
+    try:
+        fmt.get_nda(entite=profil.entite)
+    except ValueError as exc:
+        constats.append(Constat(ERREUR, "Coordonnées", f"{exc} Factures bloquées (ADR030)."))
+
     incomplets = sorted(code for code, dest in donnees["destinataires"].items() if dest is None)
     if incomplets:
         constats.append(Constat(

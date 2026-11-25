@@ -20,6 +20,8 @@ Format de la spec (voir examples/spec_exemple.json) :
   "n_facture": "R_ABC001",
   "date_emission": "2026-09-30",
   "ref_bon_commande": "BC-EXEMPLE-0001",
+  "ref_contrat": "CT-EXEMPLE-0001",        (facultatif)
+  "echeance": "2026-10-30",                (facultatif : défaut émission + 30 jours)
   "masquer_jour": true,
   "lignes": [
     {"promotion": "M1 S1", "libelle": "[2026][M1 S1][Module A][...]",
@@ -54,6 +56,18 @@ def _parse_date(valeur) -> date:
     if isinstance(valeur, date):
         return valeur
     return datetime.strptime(str(valeur), "%Y-%m-%d").date()
+
+
+def echeance_de_la_spec(spec: dict) -> date:
+    """Échéance de la facture (ADR030) : `echeance` de la spec, sinon date d'émission + 30 jours.
+
+    Raises:
+        ValueError: échéance mal formée (attendu AAAA-MM-JJ) ou antérieure à la date d'émission.
+    """
+    donnee = spec.get("echeance")
+    return fmt.calculer_echeance(
+        _parse_date(spec["date_emission"]), _parse_date(donnee) if donnee else None
+    )
 
 
 def charger_spec(chemin: Path) -> dict:
@@ -180,7 +194,14 @@ def conflits_ecriture(
 
 
 def apercu(
-    spec: dict, groupes: list, dest: dict, conflits: Optional[list] = None, *, emetteur: dict
+    spec: dict,
+    groupes: list,
+    dest: dict,
+    conflits: Optional[list] = None,
+    *,
+    emetteur: dict,
+    echeance: Optional[date] = None,
+    nda: Optional[str] = None,
 ) -> str:
     """Construit l'aperçu du PCF étape 6 (gate humain avant écriture).
 
@@ -188,7 +209,12 @@ def apercu(
     de commande) ; les colonnes s'élargissent au plus long libellé et à la plus
     longue promotion (FA-05). Les raisons de `conflits` (FA-02) s'affichent dans
     l'état de l'onglet : nouvel onglet, ou écriture refusée.
+
+    Args:
+        echeance: échéance à annoncer ; par défaut, celle de la spec (ADR030).
+        nda: n° de déclaration d'activité lu dans le MASTER ; « — » s'il n'est pas fourni.
     """
+    echeance = echeance or echeance_de_la_spec(spec)
     seances_txt = [
         (d, str(promo), libelle.replace("\n", " "), heures, taux)
         for promo, libelle, seances in groupes
@@ -206,6 +232,7 @@ def apercu(
             f"| {heures:>5}h | {taux:>6.2f} € | {heures * taux:>9.2f} €"
         )
     bc = spec.get("ref_bon_commande") or "—"
+    contrat = spec.get("ref_contrat") or "—"
     if conflits:
         nature = "REMPLACEMENT" if any(r.startswith("l'onglet") for r in conflits) else "DOUBLON DE NUMÉRO"
         etat_onglet = [f"Onglet        : {nature} — écriture refusée",
@@ -217,11 +244,14 @@ def apercu(
         f"Entité        : {spec['entite']}",
         f"N°            : {spec['n_facture']}",
         f"Date émission : {_parse_date(spec['date_emission']).strftime('%d/%m/%Y')}",
+        f"Échéance      : {echeance.strftime('%d/%m/%Y')}",
         f"Émetteur      : {emetteur['nom']} — {emetteur.get('adresse_l1', '')}, "
         f"{emetteur.get('adresse_l2', '')}",
+        f"NDA           : {nda or '—'}",
         f"Destinataire  : {dest['nom']} — {dest.get('adresse_l1', '')}, "
         f"{dest.get('adresse_l2', '')}",
         f"Bon de commande : {bc}",
+        f"Contrat       : {contrat}",
         f"Fichier       : {spec['fichier_sortie']} > onglet '{spec['onglet']}'",
         *etat_onglet,
         "",
@@ -268,12 +298,34 @@ def generer(spec: dict, dry_run: bool = False, *, prefixe: Optional[str] = None)
             "de générer (cf. references/ONBOARDING.md)."
         )
 
+    # Mentions obligatoires (ADR030) : contrôlées avant l'aperçu, donc aussi en --dry-run.
+    emetteur = fmt.get_emetteur(entite=entite)
+    if not fmt.emetteur_porte_ei(emetteur["nom"]):
+        raise EcritureRefusee(
+            f"le nom de l'émetteur « {emetteur['nom']} » ne porte pas la mention « EI » ni "
+            "« Entrepreneur individuel » (ADR030) — compléter la ligne Émetteur de "
+            "MASTER.Coordonnées avant de générer."
+        )
+    try:
+        nda = fmt.get_nda(entite=entite)
+    except ValueError as exc:
+        raise EcritureRefusee(f"{exc} Mention obligatoire (ADR030).") from exc
+    date_emission = _parse_date(spec["date_emission"])
+    try:
+        echeance = echeance_de_la_spec(spec)
+    except ValueError as exc:
+        raise EcritureRefusee(
+            f"echeance {spec.get('echeance')!r} invalide : {exc} (attendu AAAA-MM-JJ, "
+            "au plus tôt la date d'émission)"
+        ) from exc
+    ref_contrat = spec.get("ref_contrat") or None
+
     groupes = construire_groupes(spec["lignes"])
     onglet = spec["onglet"]
     # Le classeur cible est ouvert dès l'aperçu, pour annoncer l'état de l'onglet.
     wb = load_workbook(sortie) if sortie.exists() else None
     conflits = conflits_ecriture(wb, onglet, spec["n_facture"], entite=entite)
-    print(apercu(spec, groupes, dest, conflits, emetteur=fmt.get_emetteur(entite=entite)))
+    print(apercu(spec, groupes, dest, conflits, emetteur=emetteur, echeance=echeance, nda=nda))
     if conflits:
         raise EcritureRefusee(
             f"{sortie.name} n'a pas été modifié : " + " ; ".join(conflits) + ". "
@@ -294,9 +346,10 @@ def generer(spec: dict, dry_run: bool = False, *, prefixe: Optional[str] = None)
     fmt.apply_metadata(
         ws,
         n_facture=spec["n_facture"],
-        date_emission=_parse_date(spec["date_emission"]),
+        date_emission=date_emission,
         entite=entite,
         ref_bon_commande=spec.get("ref_bon_commande"),
+        ref_contrat=ref_contrat,
     )
     fmt.place_sessions(
         ws,
@@ -305,6 +358,7 @@ def generer(spec: dict, dry_run: bool = False, *, prefixe: Optional[str] = None)
         entite=entite,
         masquer_jour=bool(spec.get("masquer_jour", False)),
     )
+    fmt.apply_mentions(ws, entite=entite, date_emission=date_emission, echeance=echeance)
     fmt.apply_rib(ws, entite=entite)
     fmt.apply_print_setup(ws, entite=entite)
     wb.save(sortie)
@@ -321,10 +375,12 @@ def generer(spec: dict, dry_run: bool = False, *, prefixe: Optional[str] = None)
         ws_relu,
         entite=entite,
         n_facture=spec["n_facture"],
-        date_emission=_parse_date(spec["date_emission"]),
+        date_emission=date_emission,
         dest=dest,
         ecole_name=spec.get("ecole_label", spec["ecole"]),
         groups=groupes,
+        echeance=echeance,
+        ref_contrat=ref_contrat,
     )
     if ecarts:
         raise PostMortemEnEcart(ecarts)
