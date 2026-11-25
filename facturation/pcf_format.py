@@ -122,8 +122,8 @@ def _load_master_data(entite: str, refresh: bool = False) -> dict:
     {
         "emetteur": {"nom": ..., "adresse_l1": ..., "adresse_l2": ..., "email": ..., "tel": ...},
         "destinataires": {
-            "DOR": {...},
-            "EPITA": {...},
+            "ABC": {...},
+            "ECO": {...},
             ...
         },
         "info": {"SIRET": ..., "IBAN": ..., "BIC": ..., "TVA": ...},
@@ -234,7 +234,7 @@ def get_destinataire(code_ecole: str, *, entite: str) -> Optional[dict]:
     """Helper public : retourne le destinataire pour une école donnée, ou None.
 
     Args:
-        code_ecole: code école (ex. "DOR", "EPITA").
+        code_ecole: code école (ex. "ABC", "ECO").
         entite: "ROSARI" ou "KAUR".
     """
     data = _load_master_data(entite)
@@ -441,7 +441,7 @@ def clone_template(
 
     Args:
         dst_wb: workbook de destination (doit déjà exister, peut être vide ou avoir d'autres sheets).
-        sheet_name: nom de la nouvelle feuille (ex. "R_DOR001 Mars 2026").
+        sheet_name: nom de la nouvelle feuille (ex. "R_ABC001 Mars 2026").
         entite: code de l'entité (ex. "ROSARI").
 
     Returns:
@@ -572,12 +572,12 @@ def apply_metadata(
 
     Args:
         ws: worksheet cible.
-        n_facture: ex. "R_DOR001".
+        n_facture: ex. "R_ABC001".
         date_emission: date d'émission de la facture.
         entite: "ROSARI" ou "KAUR".
-        ref_bon_commande: réf. du bon de commande client (ex. "PO-26-ASSOTA-01791").
-            Si None, la ligne n'est pas écrite. Obligatoire pour EPITA, dont la
-            compta (Basware) rapproche facture et PO.
+        ref_bon_commande: réf. du bon de commande client (ex. "BC-EXEMPLE-0001").
+            Si None, la ligne n'est pas écrite. Obligatoire pour une école dont
+            la comptabilité rapproche facture et bon de commande.
     """
     layout = _layout_for(entite)
     siret = _siret_for(entite)
@@ -622,13 +622,14 @@ def place_sessions(
 
     Args:
         ws: worksheet cible (template cloné).
-        ecole_name: nom de l'école pour la colonne ECOLE (ex. "DOR (NEXA Digital School)").
+        ecole_name: nom de l'école pour la colonne ECOLE (ex. "ÉCOLE FICTIVE B").
         groups: list of (promotion: str, libelle: str, sessions: list).
             Chaque session = (date: date | datetime, heures: float, taux: float).
         entite: "ROSARI" ou "KAUR".
         masquer_jour: masque les colonnes Jour (K:L). À activer quand la facture
-            agrège un volume horaire sans séance datée (ex. EPITA : 1 ligne par
-            UE de bon de commande). La date reste saisie, simplement non imprimée.
+            agrège un volume horaire sans séance datée (ex. une école facturée à
+            1 ligne par UE de bon de commande). La date reste saisie, simplement
+            non imprimée.
 
     Comportement :
         - Démerge la zone cours du template

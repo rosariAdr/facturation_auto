@@ -13,16 +13,16 @@ Usage :
 Format de la spec (voir examples/spec_exemple.json) :
 {
   "entite": "ROSARI",
-  "ecole": "EPITA",
-  "ecole_label": "EPITA",
-  "fichier_sortie": "ROSARI/EPITA/ROSARI_EPITA.xlsx",
-  "onglet": "R_EPITA010 Sept 2026",
-  "n_facture": "R_EPITA010",
+  "ecole": "ABC",
+  "ecole_label": "ÉCOLE FICTIVE A",
+  "fichier_sortie": "ROSARI/ABC/ROSARI_ABC.xlsx",
+  "onglet": "R_ABC001 Sept 2026",
+  "n_facture": "R_ABC001",
   "date_emission": "2026-09-30",
-  "ref_bon_commande": "PO-26-ASSOTA-02001",
+  "ref_bon_commande": "BC-EXEMPLE-0001",
   "masquer_jour": true,
   "lignes": [
-    {"promotion": "AIS S1", "libelle": "[2026][PI][AIS S1][...]",
+    {"promotion": "M1 S1", "libelle": "[2026][M1 S1][Module A][...]",
      "seances": [{"date": "2026-09-15", "heures": 18, "taux": 90}]}
   ]
 }
