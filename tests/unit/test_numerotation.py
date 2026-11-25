@@ -1,4 +1,4 @@
-"""Numérotation des factures (F-15, ADR002, ADR029 ; banque de tests : T-NUM-01 à T-NUM-11).
+"""Numérotation des factures (F-15, ADR002, ADR029 ; banque de tests : T-NUM-01 à T-NUM-16).
 
 Tests d'acceptation écrits avant l'implémentation : chaque test importe
 `facturation.numerotation` lui-même, pour que son absence fasse échouer les tests sans
@@ -13,6 +13,9 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import re
+import shutil
+import zipfile
 from datetime import date
 
 import pytest
@@ -171,3 +174,102 @@ def test_t_num_11_lire_numeros_sans_onglet_factures_colonne_par_son_nom(tmp_path
     wb.save(master)
 
     assert set(_num().lire_numeros(master)) == {"R_ABC004", "R_ABC005"}
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Revue croisée (T-NUM-12 à T-NUM-16)
+# ──────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("code", ["123", "1AB", "0"])
+def test_t_num_12_code_ecole_commence_par_une_lettre(code):
+    """T-NUM-12 — un code école commence par une lettre (décision de l'orchestrateur, revue de F-15) :
+    `R_123001` se lirait comme un préfixe suivi de chiffres. Refusé aussi par `prochain_numero`."""
+    num = _num()
+    with pytest.raises(ValueError):
+        num.valider_code_ecole(code)
+    with pytest.raises(ValueError):
+        num.prochain_numero([], prefixe="R_", code_ecole=code)
+
+
+@pytest.mark.parametrize("prefixe", ["R", "r_", "", "ROSA_", "R-", "R__", "1_", "R_ "])
+def test_t_num_13_prefixe_invalide_refuse(prefixe):
+    """T-NUM-13 — un préfixe d'entité hors de la règle du profil (1 à 3 majuscules suivies de « _ ») est
+    refusé par `prochain_numero` comme par `numeros_manquants` : les entités ne se mélangent jamais."""
+    num = _num()
+    with pytest.raises(ValueError):
+        num.prochain_numero(["R_ABC001"], prefixe=prefixe, code_ecole="ABC")
+    with pytest.raises(ValueError):
+        num.numeros_manquants(["R_ABC001"], prefixe=prefixe, code_ecole="ABC")
+
+
+def test_t_num_14_onglet_factures_sans_sa_colonne(tmp_path):
+    """T-NUM-14 — un onglet `Factures` sans sa colonne `N° facture` : `ValueError` qui nomme l'onglet et la
+    colonne, plutôt qu'une liste incomplète qui ferait proposer un numéro déjà attribué."""
+    master = creer_master(tmp_path / "donnees")
+    wb = load_workbook(master)
+    wb["Sessions"].append(_session("R_ABC001"))
+    factures = wb.create_sheet("Factures")
+    factures.append([e for e in ENTETES_FACTURES if e != "N° facture"])
+    factures.append(["ABC", "CT-EXEMPLE-0001", "Oct 2026"])
+    wb.save(master)
+
+    with pytest.raises(ValueError) as exc:
+        _num().lire_numeros(master)
+    assert "Factures" in str(exc.value) and "N° facture" in str(exc.value), str(exc.value)
+
+
+def _fausser_dimension(chemin, remplacement: bytes):
+    """Déclare une dimension fausse dans chaque feuille, comme certains outils d'export : `remplacement` est
+    un motif `re.sub` appliqué à `<dimension ref="A1:<col><ligne>"/>`."""
+    temporaire = chemin.with_suffix(".tmp")
+    with zipfile.ZipFile(chemin) as source, zipfile.ZipFile(temporaire, "w", zipfile.ZIP_DEFLATED) as copie:
+        for info in source.infolist():
+            donnees = source.read(info.filename)
+            if info.filename.startswith("xl/worksheets/sheet"):
+                donnees, n = re.subn(rb'<dimension ref="A1:([A-Z]+)(\d+)"\s*/>', remplacement, donnees)
+                assert n == 1, info.filename  # la garde ne passe pas à vide
+            copie.writestr(info, donnees)
+    shutil.move(temporaire, chemin)
+
+
+@pytest.mark.parametrize(
+    "remplacement",
+    [rb'<dimension ref="A1:A1"/>', rb'<dimension ref="A1:\g<1>1"/>'],
+    ids=["A1-A1", "en-tete-seul"],
+)
+def test_t_num_15_dimension_declaree_fausse(tmp_path, remplacement):
+    """T-NUM-15 — un classeur qui déclare `A1:A1` (ou sa seule ligne d'en-tête) alors que des numéros existent :
+    `lire_numeros` les trouve quand même. En lecture seule, openpyxl se fie à la dimension déclarée si on ne la
+    réinitialise pas : la colonne paraît absente, ou les numéros manquent en silence (numéro en double proposé)."""
+    master = creer_master(tmp_path / "donnees")
+    wb = load_workbook(master)
+    for numero in ("R_ABC001", "R_ABC002"):
+        wb["Sessions"].append(_session(numero))
+    factures = wb.create_sheet("Factures")
+    factures.append(ENTETES_FACTURES)
+    factures.append(["R_ABC003", "ABC"])
+    wb.save(master)
+    _fausser_dimension(master, remplacement)
+
+    numeros = _num().lire_numeros(master)
+    assert numeros == ["R_ABC001", "R_ABC002", "R_ABC003"]
+    assert _num().prochain_numero(numeros, prefixe="R_", code_ecole="ABC") == "R_ABC004"
+
+
+def test_t_num_16_lire_numeros_trie_et_sans_doublon(tmp_path):
+    """T-NUM-16 — `lire_numeros` renvoie une liste triée, sans doublon, même quand un numéro revient dans
+    `Sessions` et dans `Factures`, et quel que soit l'ordre des lignes."""
+    master = creer_master(tmp_path / "donnees")
+    wb = load_workbook(master)
+    for numero in ("R_ECO002", "R_ABC002", "K_ABC001", "R_ABC002", "R_ABC001"):
+        wb["Sessions"].append(_session(numero))
+    factures = wb.create_sheet("Factures")
+    factures.append(ENTETES_FACTURES)
+    for numero in ("R_ABC003", "R_ABC001", "R_ECO002"):
+        factures.append([numero, "ABC"])
+    wb.save(master)
+
+    numeros = _num().lire_numeros(master)
+    assert isinstance(numeros, list)
+    assert numeros == ["K_ABC001", "R_ABC001", "R_ABC002", "R_ABC003", "R_ECO002"]
