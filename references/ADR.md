@@ -613,7 +613,7 @@ L'audit, le 21/11/2026, d'une facture émise a relevé des mentions absentes ou 
 
 ### Décision
 Toute facture porte :
-1. **Émetteur** : nom et prénom suivis de « EI » (ou « Entrepreneur individuel »), adresse, SIRET, email, téléphone.
+1. **Émetteur** : nom et prénom suivis de « EI » (ou « Entrepreneur individuel »), adresse, SIRET, email, téléphone. Les deux entités sont des entrepreneurs individuels (KAUR confirmée le 25/11/2026) : un émetteur sans cette mention bloque l'émission.
 2. **Client** : dénomination juridique de la société qui paie, telle qu'écrite au contrat (pas le nom commercial), et son adresse de facturation. Le n° de TVA du client n'est pas affiché quand il n'est pas requis (vérifié le 23/11/2026 pour l'école pilote ; à vérifier à l'onboarding de chaque école).
 3. **Références**, sur trois lignes distinctes : n° de facture ; n° de contrat quand il existe ; n° de bon de commande quand l'école en a émis un. Une facture par contrat quand l'école en a plusieurs (règle d'école).
 4. **Dates** : date d'émission (ADR027), dates des séances ou période, et une **date d'échéance explicite** : le délai du contrat ou de l'école ; à défaut, la date d'émission plus 30 jours.

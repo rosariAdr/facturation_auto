@@ -55,7 +55,7 @@ La seule source des identités. Première ligne = en-têtes.
 
 Trois valeurs de `Type`, écrites exactement ainsi :
 
-- **`Émetteur`** (avec l'accent) — une ligne, `Code` = l'entité (`ROSARI`). `Nom` = nom et prénom suivis de « EI » (ADR030). Alimente l'encadré émetteur.
+- **`Émetteur`** (avec l'accent) — une ligne, `Code` = l'entité (`ROSARI`). `Nom` = nom et prénom suivis de « EI » ou « Entrepreneur individuel » (ADR030, valable pour ROSARI comme pour KAUR). Alimente l'encadré émetteur.
 - **`Destinataire`** — une ligne par école, `Code` = code de l'école. `Nom` = **dénomination juridique de la société qui paie**, telle qu'écrite au contrat (ADR030), pas le nom commercial. Une ligne sans nom ou sans adresse bloque la facture (étape 4 du PCF).
 - **`Info`** — `Code` = l'entité, `Nom` porte le libellé et `Adresse L1` la valeur. `SIRET`, `IBAN` et `BIC` sont obligatoires : leur absence lève une erreur au chargement. `TVA` porte la mention de TVA. `NDA` porte le n° de déclaration d'activité (lu par le gabarit avec F-24 ; ajouté à la main sur les factures jusque-là). Les lignes `Info` ne concernent que l'émetteur : on n'y range pas le SIRET d'une école.
 
