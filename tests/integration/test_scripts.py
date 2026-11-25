@@ -340,3 +340,44 @@ def test_t_ver_04_verifier_signale_l_emetteur_sans_ei(tmp_path):
     res = _lancer("-m", "facturation", "profil", "verifier", "--profil", str(profil))
     assert res.returncode == 1, res.stdout + res.stderr
     assert any(re.search(MENTION_EI, ligne) for ligne in _erreurs(res.stdout)), res.stdout
+
+
+# ──────────────────────────────────────────────────────────────────────
+# F-10 — lecture de l'agenda (T-CLI-11)
+# ──────────────────────────────────────────────────────────────────────
+
+AGENDA_FICTIF = DEPOT / "tests" / "fixtures" / "agenda_fictif.ics"
+
+
+def test_t_cli_11_agenda_lire_un_fichier_local(tmp_path):
+    """T-CLI-11 — `facturation agenda lire --mois 2026-11 --fichier …` liste les séances de novembre du
+    .ics local (date, début–fin, durée, intitulé), sans profil ni accès réseau."""
+    sans_profil = {
+        "APPDATA": str(tmp_path / "appdata"), "XDG_CONFIG_HOME": str(tmp_path / "config"),
+        "FACTURATION_PROFIL": str(tmp_path / "aucun_profil.toml"),
+    }
+    res = _lancer("-m", "facturation", "agenda", "lire", "--mois", "2026-11", "--fichier", str(AGENDA_FICTIF),
+                  env_extra=sans_profil)
+    assert res.returncode == 0, res.stdout + res.stderr
+    lignes = res.stdout.splitlines()
+
+    def ligne_du(jour: str, debut: str) -> str:
+        """La ligne de la séance : sa date et son heure de début (un en-tête peut citer la date seule)."""
+        trouvees = [ligne for ligne in lignes if jour in ligne and debut in ligne]
+        assert len(trouvees) == 1, f"{jour} {debut} : {trouvees}\n{res.stdout}"
+        return trouvees[0]
+
+    for jour, debut, fin, intitule in (
+        ("05/11/2026", "14:00", "17:30", "#ABC-M1 Cours fictif - Module A (déplacé)"),
+        ("10/11/2026", "09:00", "12:30", "#ABC-M1 Cours fictif - Module A"),
+        ("13/11/2026", "00:30", "02:30", "#ECO-M2 Cours fictif noté en UTC"),
+        ("17/11/2026", "09:00", "12:30", "#ABC-M1 Cours fictif - Module A"),
+        ("24/11/2026", "09:00", "12:30", "#ABC-M1 Cours fictif - Module A"),
+        ("28/11/2026", "10:00", "13:30", "#ABC-M1 Cours fictif - Module A"),
+        ("30/11/2026", "20:00", "22:00", "#ABC-M1 Cours fictif du soir"),
+    ):
+        ligne = ligne_du(jour, debut)
+        assert fin in ligne and intitule in ligne, ligne
+    assert re.search(r"3[.,]5|3 ?h ?30", ligne_du("05/11/2026", "14:00")), "durée de 3 h 30 absente"
+    for absent in ("03/11/2026", "11/11/2026", "Jour férié fictif", "27/10/2026", "15/12/2026", "annulé"):
+        assert absent not in res.stdout, absent
