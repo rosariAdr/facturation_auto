@@ -1,5 +1,6 @@
 """Registre des factures dans le MASTER et commandes `facturation registre` (F-25 ; banque de tests :
-T-RGF-01, T-RGF-03 à T-RGF-09, T-RGF-23 à T-RGF-37).
+T-RGF-01, T-RGF-03 à T-RGF-09, T-RGF-23 à T-RGF-37 ; constats de revue : T-RGF-05b, T-RGF-05c,
+T-RGF-09c, T-RGF-30b, T-RGF-31b, T-RGF-32b, T-RGF-34b, T-RGF-38 à T-RGF-41).
 
 Tests d'acceptation écrits avant l'implémentation : chaque test importe `facturation.registre` (ou
 `facturation.cli`) lui-même, pour que l'absence du module fasse échouer les tests sans bloquer la
@@ -67,6 +68,7 @@ import io
 import json
 import re
 import sys
+import zipfile
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -74,6 +76,7 @@ from pathlib import Path
 import pytest
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
+from openpyxl.utils.datetime import to_excel
 
 from facturation import config
 from facturation import pcf_format as fmt
@@ -557,7 +560,9 @@ def test_t_rgf_09b_reprise_de_l_historique(tmp_path):
     assert reprise.total_ht == Decimal("300.3") and reprise.statut_saisi == "émise" and reprise.ecole == "ABC"
     assert reg.statut_affiche(reprise, aujourd_hui=date(2030, 1, 1)) == "émise"
     assert lignes["R_ECO004"].total_ht == Decimal("157.5")
-    assert len(_evenements(profil)) >= 1
+    # Un événement par facture reprise (constat de revue : « au moins un » laissait passer un seul
+    # événement pour toute la reprise).
+    assert [e["n_facture"] for e in _evenements(profil)] == ["R_ABC001", "R_ECO004"]
     restantes = reg.anomalies(list(lignes.values()), _sessions_lues(profil))
     assert not any("reprendre-historique" in a for a in restantes), restantes
 
@@ -591,7 +596,9 @@ def test_t_rgf_25_initialiser_cree_l_onglet(tmp_path):
     apres = _instantane(profil.master)
     assert {onglet: apres[onglet] for onglet in avant} == avant
     assert _lire(profil) == {}
-    assert len(_evenements(profil)) >= 1
+    # La création de l'onglet a son propre événement, au N° nul, et lui seul (constat de revue).
+    (evenement,) = _evenements(profil)
+    assert evenement["n_facture"] is None, evenement
 
 
 def test_t_rgf_26_section_de_l_apercu(tmp_path):
@@ -725,7 +732,9 @@ def test_t_rgf_30_registre_filtres_ecole_et_mois(tmp_path, commande):
 
 
 def test_t_rgf_31_registre_trous(tmp_path, commande):
-    """T-RGF-31 — `registre --trous` liste les numéros manquants sans raison notée."""
+    """T-RGF-31 — `registre --trous` liste les numéros manquants sans raison notée, et eux seuls (ni
+    R_ABC001 ni R_ABC003), et rend 3 (une raison est à noter) ; une fois la raison de R_ABC002 notée,
+    il ne liste plus rien et rend 0."""
     profil = _installer(tmp_path, factures=[
         _facture("R_ABC001", emission=date(2026, 10, 1), echeance=date(2026, 11, 30), total=90,
                  envoi=date(2026, 10, 2), paiement=date(2026, 10, 20), statut="payée"),
@@ -734,6 +743,14 @@ def test_t_rgf_31_registre_trous(tmp_path, commande):
     ], sessions=[_session("R_ABC001", 90), _session("R_ABC003", 90)])
     code, sortie, erreur = commande(profil, "registre", "--trous")
     assert "R_ABC002" in sortie, sortie + erreur
+    # Constat de revue : ni le code ni l'absence des N° qui ne sont pas des trous n'étaient vérifiés.
+    assert code == 3, sortie + erreur
+    assert "R_ABC001" not in sortie and "R_ABC003" not in sortie, sortie
+
+    _reg().noter_manquant(profil, "R_ABC002", raison="Numéro sauté à la saisie", confirme=True)
+    code, sortie, erreur = commande(profil, "registre", "--trous")
+    assert code == 0, sortie + erreur
+    assert "R_ABC002" not in sortie, sortie
 
 
 REPONSES = [
@@ -880,3 +897,390 @@ def test_t_rgf_37_option_profil(tmp_path, commande, monkeypatch):
                                     str(profil.chemin), "--oui")
     assert code == 0, sortie + erreur
     assert _lire(profil)["R_ABC001"].note == "Relance envoyée"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Constats de revue de F-25
+# ──────────────────────────────────────────────────────────────────────
+#
+# Rouges sur le code du commit 4e696a6 : T-RGF-05b, T-RGF-30b, T-RGF-31b, T-RGF-32b, T-RGF-34b,
+# T-RGF-38, T-RGF-38b, T-RGF-39b, T-RGF-39c, T-RGF-41. Les autres gardent un comportement déjà correct
+# que rien ne testait (T-RGF-05c, T-RGF-09c, T-RGF-39, T-RGF-40, et les assertions renforcées de
+# T-RGF-09b, T-RGF-25 et T-RGF-31) : chacun a été vu rouge, code cassé exprès (AGENTS.md § 5).
+
+
+def _poser_valeur_en_cache(chemin: Path, onglet: str, coordonnee: str, valeur: str, *, texte: bool) -> None:
+    """Donne à la formule `onglet!coordonnee` sa valeur en cache, comme dans un fichier enregistré par
+    Excel (openpyxl écrit `<v/>`, vide) : le XML de la feuille est réécrit dans l'archive."""
+    with zipfile.ZipFile(chemin) as archive:
+        parties = {nom: archive.read(nom) for nom in archive.namelist()}
+    classeur = parties["xl/workbook.xml"].decode("utf-8")
+    identifiant = re.search(rf'<sheet name="{re.escape(onglet)}"[^>]*r:id="([^"]+)"', classeur).group(1)
+    relations = parties["xl/_rels/workbook.xml.rels"].decode("utf-8")
+    relation = re.search(rf'<Relationship[^>]*Id="{identifiant}"[^>]*/>', relations).group(0)
+    cible = re.search(r'Target="([^"]+)"', relation).group(1).lstrip("/")
+    partie = cible if cible.startswith("xl/") else f"xl/{cible}"
+    xml = parties[partie].decode("utf-8")
+    motif = re.compile(rf'<c r="{coordonnee}"([^>]*)><f>(.*?)</f><v\s*/></c>')
+    assert len(motif.findall(xml)) == 1, xml  # la garde ne passe pas à vide
+    type_ = ' t="str"' if texte else ""
+    xml = motif.sub(lambda m: f'<c r="{coordonnee}"{m.group(1)}{type_}><f>{m.group(2)}</f><v>{valeur}</v></c>', xml)
+    parties[partie] = xml.encode("utf-8")
+    with zipfile.ZipFile(chemin, "w", zipfile.ZIP_DEFLATED) as archive:
+        for nom, contenu in parties.items():
+            archive.writestr(nom, contenu)
+
+
+def _ecriture_refusee_ou_sans_effacement(reg, profil, octets: bytes) -> None:
+    """Une note sur R_ECO001 : refusée (`RegistreInvalide` qui parle de formule, rien d'écrit) ou
+    acceptée ; l'appelant vérifie ensuite que rien de ce que l'outil lit n'a été effacé."""
+    try:
+        reg.mettre_a_jour_registre(profil, "R_ECO001", note="Relance faite le 05/01/2027", confirme=True)
+    except reg.RegistreInvalide as exc:
+        assert "formule" in str(exc).casefold(), str(exc)
+        _rien_n_a_ete_ecrit(profil, octets)
+
+
+def test_t_rgf_38_numero_en_formule_dans_sessions_jamais_efface(tmp_path):
+    """T-RGF-38 — `Sessions!D3` (N°_Facture) porte une formule (« ="R_ABC"&"002" ») avec sa valeur en
+    cache, comme dans un fichier enregistré par Excel. Un enregistrement par openpyxl efface cette
+    valeur, et l'outil lit le MASTER en `data_only=True` : R_ABC002 disparaîtrait de `lire_numeros`
+    et `prochain_numero` le reproposerait (ADR029 : aucun numéro réutilisé). Une simple note sur
+    R_ECO001 est donc refusée (§ 15 : « garder le contrôle de fidélité à l'écriture »), ou n'efface
+    rien : dans tous les cas R_ABC002 reste lu et le suivant reste R_ABC003. La formule du pied de
+    `Devis`, onglet que l'outil ne lit pas, ne bloque rien (T-RGF-03)."""
+    reg = _reg()
+    num = importlib.import_module("facturation.numerotation")
+    profil = _installer(
+        tmp_path,
+        factures=[_facture("R_ECO001", ecole="ECO", emission=date(2026, 12, 1), echeance=date(2027, 1, 31), total=90,
+                           statut="émise")],
+        sessions=[_session("R_ABC001", 157.5), _session("R_ABC002", 157.5, jour=date(2026, 11, 10)),
+                  _session("R_ECO001", 90, ecole="ECO")],
+    )
+    wb = load_workbook(profil.master)
+    wb["Sessions"]["D3"] = '="R_ABC"&"002"'
+    wb.save(profil.master)
+    _poser_valeur_en_cache(profil.master, "Sessions", "D3", "R_ABC002", texte=True)
+
+    def prochain():
+        return num.prochain_numero(num.lire_numeros(profil.master), prefixe="R_", code_ecole="ABC")
+
+    assert "R_ABC002" in num.lire_numeros(profil.master) and prochain() == "R_ABC003"  # la garde ne passe pas à vide
+    _ecriture_refusee_ou_sans_effacement(reg, profil, profil.master.read_bytes())
+    assert "R_ABC002" in num.lire_numeros(profil.master)
+    assert prochain() == "R_ABC003"
+
+
+def test_t_rgf_38b_echeance_en_formule_jamais_effacee(tmp_path):
+    """T-RGF-38b — l'Échéance de R_ABC001 est une formule (« =E2+45 », 15/11/2026) avec sa valeur en
+    cache : la facture est échue le 15/12/2026. Une note sur une autre facture ne la fait pas
+    disparaître sans bruit de `echues` et de `section_apercu` : l'écriture est refusée (rien
+    d'écrit), ou l'échéance reste lue."""
+    reg = _reg()
+    profil = _installer(tmp_path, factures=[
+        _facture("R_ABC001", emission=date(2026, 10, 1), total=90, statut="émise"),
+        _facture("R_ECO001", ecole="ECO", emission=date(2026, 12, 1), echeance=date(2027, 1, 31), total=90,
+                 statut="émise"),
+    ], sessions=[_session("R_ABC001", 90), _session("R_ECO001", 90, ecole="ECO")])
+    _, coordonnee = _cellule("Échéance", 2)
+    _, emission = _cellule("Date d'émission", 2)
+    wb = load_workbook(profil.master)
+    cellule = wb["Factures"][coordonnee]
+    cellule.value = f"={emission}+45"
+    cellule.number_format = "DD/MM/YYYY"
+    wb.save(profil.master)
+    _poser_valeur_en_cache(profil.master, "Factures", coordonnee, str(int(to_excel(date(2026, 11, 15)))), texte=False)
+    jour = date(2026, 12, 15)
+
+    def echues_du_jour():
+        return [ligne.n_facture for ligne in reg.echues(list(_lire(profil).values()), aujourd_hui=jour)]
+
+    assert echues_du_jour() == ["R_ABC001"]  # la garde ne passe pas à vide
+    _ecriture_refusee_ou_sans_effacement(reg, profil, profil.master.read_bytes())
+    assert echues_du_jour() == ["R_ABC001"]
+    assert reg.section_apercu(profil, aujourd_hui=jour) is not None
+
+
+def _enregistrement_qui_change_aussi(monkeypatch, onglet: str, coordonnee: str, valeur) -> None:
+    """L'enregistrement atomique du MASTER change aussi une cellule que l'opération n'a pas annoncée."""
+    from facturation import fichiers
+
+    vrai = fichiers.enregistrer_classeur_atomique
+
+    def enregistrer(wb, chemin, *args, **kwargs):
+        wb[onglet][coordonnee].value = valeur
+        return vrai(wb, chemin, *args, **kwargs)
+
+    monkeypatch.setattr(fichiers, "enregistrer_classeur_atomique", enregistrer)
+
+
+def test_t_rgf_39_controle_apres_ecriture_non_conforme(tmp_path, monkeypatch, commande):
+    """T-RGF-39 — le contrôle après écriture (relecture : seules les cellules annoncées ont changé, § 7)
+    voit une cellule changée sans être annoncée (`Sessions!A2`) : `mettre_a_jour_registre` lève
+    `EcritureNonConforme`, dont le message cite la cellule et la sauvegarde ; la commande rend 2
+    (§ 1.6 : « contrôle après écriture non conforme »)."""
+    reg = _reg()
+    _enregistrement_qui_change_aussi(monkeypatch, "Sessions", "A2", "2026-12-31")
+    factures, sessions = _registre_courant()
+
+    profil = _installer(tmp_path / "fonction", factures=factures, sessions=sessions)
+    with pytest.raises(reg.EcritureNonConforme) as exc:
+        reg.mettre_a_jour_registre(profil, "R_ABC001", date_paiement=date(2026, 12, 20), confirme=True)
+    (sauvegarde,) = _sauvegardes(profil)
+    assert "Sessions!A2" in str(exc.value) and sauvegarde.name in str(exc.value), str(exc.value)
+
+    profil = _installer(tmp_path / "commande", factures=factures, sessions=sessions)
+    code, sortie, erreur = commande(profil, "registre", "payee", "R_ABC001", "--le", "20/12/2026", "--oui")
+    (sauvegarde,) = _sauvegardes(profil)
+    assert code == 2, sortie + erreur
+    assert "Sessions!A2" in erreur and sauvegarde.name in erreur, erreur
+
+
+def test_t_rgf_39b_relecture_impossible_ne_dit_pas_que_rien_n_est_ecrit(tmp_path, monkeypatch, commande):
+    """T-RGF-39b — la relecture du MASTER échoue juste après l'enregistrement (Excel ou un antivirus le
+    rouvre : `PermissionError`). Le MASTER est déjà écrit et l'événement journalisé : la commande ne
+    laisse pas croire que rien n'a été écrit (aujourd'hui : code 1 et « [Errno 13] » seul). Elle rend
+    2, le contrôle après écriture n'ayant pas pu se faire (§ 1.6), avec un message qui cite la
+    sauvegarde."""
+    reg = _reg()
+    from facturation import fichiers
+
+    enregistre: list[Path] = []
+    vrai_enregistrer, vrai_charger = fichiers.enregistrer_classeur_atomique, reg.load_workbook
+
+    def enregistrer(wb, chemin, *args, **kwargs):
+        resultat = vrai_enregistrer(wb, chemin, *args, **kwargs)
+        enregistre.append(Path(chemin))
+        return resultat
+
+    def charger(chemin, *args, **kwargs):
+        if enregistre:
+            raise PermissionError(13, "Permission denied", str(chemin))
+        return vrai_charger(chemin, *args, **kwargs)
+
+    monkeypatch.setattr(fichiers, "enregistrer_classeur_atomique", enregistrer)
+    monkeypatch.setattr(reg, "load_workbook", charger)
+    factures, sessions = _registre_courant()
+    profil = _installer(tmp_path, factures=factures, sessions=sessions)
+
+    code, sortie, erreur = commande(profil, "registre", "envoyee", "R_ABC002", "--le", "05/12/2026", "--oui")
+
+    assert enregistre == [profil.master], sortie + erreur  # la garde ne passe pas à vide : le MASTER est écrit
+    assert _lire(profil)["R_ABC002"].date_envoi == date(2026, 12, 5)
+    (sauvegarde,) = _sauvegardes(profil)
+    assert code == 2, sortie + erreur
+    assert sauvegarde.name in erreur, erreur
+    assert "rien n'a été" not in (sortie + erreur).casefold(), sortie + erreur
+
+
+def test_t_rgf_39c_journal_en_echec_apres_l_ecriture(tmp_path, monkeypatch, commande):
+    """T-RGF-39c — le journal des écritures ne s'écrit pas (disque plein, `_sorties` en lecture seule)
+    alors que le MASTER vient d'être écrit : la commande échoue (code non nul, à trancher
+    `💡 [proposé — à valider]`) avec un message qui dit que le MASTER est écrit, que le journal ne l'est
+    pas, et qui cite la sauvegarde (aujourd'hui : code 1 et « [Errno 28] » seul). Si le correctif
+    choisit de ne rien écrire du tout, le message n'a pas à le dire."""
+    from facturation import journal
+
+    def disque_plein(*args, **kwargs):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(journal, "ajouter_evenement", disque_plein)
+    factures, sessions = _registre_courant()
+    profil = _installer(tmp_path, factures=factures, sessions=sessions)
+
+    code, sortie, erreur = commande(profil, "registre", "payee", "R_ABC001", "--le", "20/12/2026", "--oui")
+
+    assert code != 0, sortie + erreur
+    if _lire(profil)["R_ABC001"].date_paiement is not None:  # le MASTER est écrit
+        (sauvegarde,) = _sauvegardes(profil)
+        assert sauvegarde.name in erreur and "journal" in erreur.casefold(), erreur
+        assert "rien n'a été" not in (sortie + erreur).casefold(), sortie + erreur
+
+
+@pytest.mark.parametrize("appel", list(APPELS))
+def test_t_rgf_40_ecriture_refusee_si_l_enregistrement_perdrait_une_partie(tmp_path, monkeypatch, appel):
+    """T-RGF-40 — avant d'écrire, `fidelite_aller_retour` est consulté (§ 15) : si un enregistrement par
+    openpyxl perdait une partie du MASTER (ici un segment), chaque écriture de premier niveau est
+    refusée (`RegistreInvalide` qui nomme la partie), sans écriture, sauvegarde, journal ni verrou.
+    La perte est simulée : `fidelite_aller_retour` est testée sur de vrais classeurs (T-MST-25,
+    T-MST-35)."""
+    reg = _reg()
+    profil = _profil_pour(tmp_path, appel)
+    octets = profil.master.read_bytes()
+    perte = "segment(s) (slicers) perdu(s) à l'enregistrement : 1 avant, 0 après"
+    monkeypatch.setattr(reg, "fidelite_aller_retour", lambda chemin: [perte])
+    with pytest.raises(reg.RegistreInvalide) as exc:
+        APPELS[appel](reg, profil, True)
+    assert "segment" in str(exc.value), str(exc.value)
+    _rien_n_a_ete_ecrit(profil, octets)
+
+
+def _registre_a_trou():
+    """R_ABC001 et R_ABC003 (trou : R_ABC002), et R_ECO002 (trou : R_ECO001)."""
+    factures = [
+        _facture("R_ABC001", emission=date(2026, 10, 1), echeance=date(2026, 11, 30), total=90,
+                 envoi=date(2026, 10, 2), paiement=date(2026, 10, 20), statut="payée"),
+        _facture("R_ABC003", emission=date(2026, 11, 1), echeance=date(2026, 12, 31), total=90,
+                 envoi=date(2026, 11, 2), paiement=date(2026, 11, 20), statut="payée"),
+        _facture("R_ECO002", ecole="ECO", emission=date(2026, 11, 1), echeance=date(2026, 12, 31), total=90,
+                 envoi=date(2026, 11, 2), paiement=date(2026, 11, 20), statut="payée"),
+    ]
+    sessions = [_session("R_ABC001", 90), _session("R_ABC003", 90), _session("R_ECO002", 90, ecole="ECO")]
+    return factures, sessions
+
+
+CAS_MANQUANT_HORS_SERIE = [
+    # (identifiant, N° refusé)
+    ("au-dela-de-la-serie", "R_ABC050"),
+    ("rang-a-quatre-chiffres", "R_ABC0021"),
+    ("ecole-inconnue", "R_ZZZ001"),
+]
+
+
+@pytest.mark.parametrize("numero", [c[1] for c in CAS_MANQUANT_HORS_SERIE], ids=[c[0] for c in CAS_MANQUANT_HORS_SERIE])
+def test_t_rgf_05b_manquant_seulement_un_numero_qui_manque_a_la_serie(tmp_path, numero):
+    """T-RGF-05b — `noter_manquant` ne note qu'un numéro qui manque à la série (ADR029 : la série
+    continue après le plus grand numéro) : un trou (R_ABC002, entre R_ABC001 et R_ABC003), ou le
+    numéro qui suit le plus grand (T-RGF-05). Sont refusés (`RegistreInvalide` qui cite le N°), sans
+    rien écrire : une faute de frappe qui ferait sauter la série (R_ABC050 : 46 faux trous et
+    `prochain_numero` à R_ABC051), un rang à quatre chiffres (R_ABC0021, lu aujourd'hui comme l'école
+    « ABC0 »), une école absente de `Écoles` et de `Règles_facturation` (R_ZZZ001). Le vrai trou reste
+    accepté."""
+    reg = _reg()
+    factures, sessions = _registre_a_trou()
+    profil = _installer(tmp_path, factures=factures, sessions=sessions)
+    octets = profil.master.read_bytes()
+
+    with pytest.raises(reg.RegistreInvalide) as exc:
+        reg.noter_manquant(profil, numero, raison="Faute de frappe", confirme=True)
+    assert numero in str(exc.value), str(exc.value)
+    _rien_n_a_ete_ecrit(profil, octets)
+
+    reg.noter_manquant(profil, "R_ABC002", raison="Numéro sauté à la saisie", confirme=True)
+    assert _lire(profil)["R_ABC002"].statut_saisi == "abandonnée"
+
+
+@pytest.mark.parametrize("numero", ["R_ABC001", "K_ABC002", "R_ABC02"],
+                         ids=["present-dans-sessions", "autre-prefixe", "mal-forme"])
+def test_t_rgf_05c_manquant_refuse_un_numero_qui_a_servi_ou_mal_forme(tmp_path, numero):
+    """T-RGF-05c — `noter_manquant` refuse un N° présent dans `Sessions` (il a servi : noté
+    « abandonnée », ses séances sortiraient de l'anti-doublon et seraient refacturées), un N° d'un
+    autre préfixe que celui de l'entité, ou mal formé : `RegistreInvalide` qui cite le N°, sans rien
+    écrire."""
+    reg = _reg()
+    profil = _installer(tmp_path, factures=[], sessions=[_session("R_ABC001", 90)])
+    octets = profil.master.read_bytes()
+    with pytest.raises(reg.RegistreInvalide) as exc:
+        reg.noter_manquant(profil, numero, raison="Erreur de saisie", confirme=True)
+    assert numero in str(exc.value), str(exc.value)
+    _rien_n_a_ete_ecrit(profil, octets)
+
+
+def test_t_rgf_09c_reprise_refusee(tmp_path):
+    """T-RGF-09c — la reprise de l'historique est refusée (`RegistreInvalide`), sans rien écrire, pour un
+    N° dont les lignes `Sessions` portent deux écoles (le message nomme les deux) et pour un onglet
+    `Sessions` qui a une ligne illisible (un total repris doit compter toutes les séances)."""
+    reg = _reg()
+    profil = _installer(tmp_path / "deux_ecoles", factures=[], sessions=[
+        _session("R_ABC001", 90), _session("R_ABC001", 90, ecole="ECO", jour=date(2026, 11, 10))])
+    with pytest.raises(reg.RegistreInvalide) as exc:
+        reg.lignes_historiques(_master().lire_master(profil.master))
+    message = str(exc.value)
+    assert "R_ABC001" in message and re.search(r"\bABC\b", message) and re.search(r"\bECO\b", message), message
+    octets = profil.master.read_bytes()
+    with pytest.raises(reg.RegistreInvalide):
+        reg.initialiser_registre(profil, reprendre_historique=True, confirme=True)
+    _rien_n_a_ete_ecrit(profil, octets)
+
+    illisible = _session("R_ABC002", 90)
+    illisible[4] = "fin nov"  # Date_séance
+    profil = _installer(tmp_path / "illisible", factures=[], sessions=[_session("R_ABC001", 90), illisible])
+    with pytest.raises(reg.RegistreInvalide) as exc:
+        reg.lignes_historiques(_master().lire_master(profil.master))
+    assert "Sessions" in str(exc.value), str(exc.value)
+    octets = profil.master.read_bytes()
+    with pytest.raises(reg.RegistreInvalide):
+        reg.initialiser_registre(profil, reprendre_historique=True, confirme=True)
+    _rien_n_a_ete_ecrit(profil, octets)
+
+
+def test_t_rgf_30b_ecole_inconnue(tmp_path, commande):
+    """T-RGF-30b — `registre --ecole ZZZ`, école inconnue de l'onglet `Écoles` (faute de frappe) : code
+    1, avec un message qui cite « ZZZ » et l'onglet `Écoles` (aujourd'hui : « Aucune facture ne
+    correspond » et code 0)."""
+    factures, sessions = _registre_courant()
+    profil = _installer(tmp_path, factures=factures, sessions=sessions)
+    code, sortie, erreur = commande(profil, "registre", "--ecole", "ZZZ")
+    assert code == 1, sortie + erreur
+    assert "ZZZ" in sortie + erreur and "Écoles" in sortie + erreur, sortie + erreur
+
+
+def test_t_rgf_31b_trous_filtres_par_ecole(tmp_path, commande):
+    """T-RGF-31b — `registre --trous --ecole ABC` ne liste que les trous de ABC (R_ABC002), pas ceux
+    de ECO (R_ECO001) ; sans `--ecole`, les deux sont listés."""
+    factures, sessions = _registre_a_trou()
+    profil = _installer(tmp_path, factures=factures, sessions=sessions)
+
+    code, sortie, erreur = commande(profil, "registre", "--trous")
+    assert code == 3 and "R_ABC002" in sortie and "R_ECO001" in sortie, sortie + erreur
+
+    code, sortie, erreur = commande(profil, "registre", "--trous", "--ecole", "ABC")
+    assert code == 3 and "R_ABC002" in sortie, sortie + erreur
+    assert "R_ECO001" not in sortie, sortie
+
+
+def test_t_rgf_32b_master_change_pendant_la_question(tmp_path, commande, monkeypatch):
+    """T-RGF-32b — ce qui est écrit est ce qui a été validé (§ 1.3). La commande montre
+    « 02/12/2026 → 04/12/2026 » ; pendant la question, la date d'envoi est changée dans Excel
+    (09/12/2026). Après « oui », l'écriture est refusée (code 1 : le MASTER a changé depuis
+    l'aperçu) : la valeur saisie entre-temps n'est pas écrasée sans avoir été montrée, et rien n'est
+    journalisé."""
+    module = importlib.import_module("facturation.commandes.registre")
+    factures, sessions = _registre_courant()
+    profil = _installer(tmp_path, factures=factures, sessions=sessions)
+    _, coordonnee = _cellule("Date d'envoi", 2)
+
+    def saisie_dans_excel_puis_oui(question, reponses, **_):
+        wb = load_workbook(profil.master)
+        cellule = wb["Factures"][coordonnee]
+        cellule.value = datetime(2026, 12, 9)
+        cellule.number_format = "DD/MM/YYYY"
+        wb.save(profil.master)
+        return "oui"
+
+    monkeypatch.setattr(module, "demander", saisie_dans_excel_puis_oui)
+    code, sortie, erreur = commande(profil, "registre", "envoyee", "R_ABC001", "--le", "04/12/2026", "--remplacer")
+
+    assert "02/12/2026" in sortie and "04/12/2026" in sortie, sortie + erreur  # l'aperçu montré
+    assert code == 1, sortie + erreur
+    assert _lire(profil)["R_ABC001"].date_envoi == date(2026, 12, 9)
+    assert _evenements(profil) == []
+
+
+def test_t_rgf_34b_note_avec_caractere_de_controle(tmp_path, commande):
+    """T-RGF-34b — `registre note R_ABC001 "bip<BEL>" --oui` : un caractère de contrôle qu'un classeur
+    ne peut pas enregistrer rend 1 avec un message en français (aujourd'hui : `IllegalCharacterError`,
+    trace Python), et rien n'est écrit."""
+    factures, sessions = _registre_courant()
+    profil = _installer(tmp_path, factures=factures, sessions=sessions)
+    octets = profil.master.read_bytes()
+    code, sortie, erreur = commande(profil, "registre", "note", "R_ABC001", "bip\x07", "--oui")
+    assert code == 1, sortie + erreur
+    assert "note" in erreur.casefold(), erreur
+    _master_inchange(profil, octets)
+
+
+def test_t_rgf_41_manquant_sans_onglet_sessions(tmp_path, commande):
+    """T-RGF-41 — `registre manquant` sur un MASTER sans onglet `Sessions` : code 1 avec un message
+    qui nomme l'onglet (aujourd'hui : `KeyError`, trace Python), et rien n'est écrit."""
+    factures, sessions = _registre_courant()
+    profil = _installer(tmp_path, factures=factures, sessions=sessions)
+    wb = load_workbook(profil.master)
+    del wb["Sessions"]
+    wb.save(profil.master)
+    octets = profil.master.read_bytes()
+    code, sortie, erreur = commande(profil, "registre", "manquant", "R_ABC003", "--raison", "Numéro sauté", "--oui")
+    assert code == 1, sortie + erreur
+    assert "Sessions" in erreur, erreur
+    _rien_n_a_ete_ecrit(profil, octets)

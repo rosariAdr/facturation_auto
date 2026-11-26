@@ -1,5 +1,6 @@
 """Registre des factures : fonctions pures et feuille ouverte (F-25, `facturation/registre.py` ;
-banque de tests : T-RGF-02, T-RGF-04a, T-RGF-10 à T-RGF-22).
+banque de tests : T-RGF-02, T-RGF-04a, T-RGF-10 à T-RGF-22 ; constats de revue : T-RGF-01b,
+T-RGF-04c, T-RGF-13d, T-RGF-14b, T-RGF-14c, T-RGF-17b, T-RGF-19c à T-RGF-19e, T-RGF-22b).
 
 Tests d'acceptation écrits avant l'implémentation : chaque test importe `facturation.registre`
 lui-même, pour que l'absence du module fasse échouer les tests sans bloquer la collecte des autres.
@@ -51,6 +52,7 @@ from __future__ import annotations
 
 import dataclasses
 import importlib
+import re
 from datetime import date, datetime, time
 from decimal import Decimal
 
@@ -549,3 +551,169 @@ def test_t_rgf_22_statut_ecrit_par_l_emission():
     assert reg.modifier_ligne(ws, "R_ABC001", statut="émise") == {"Statut": ("en émission", "émise")}
     assert reg.modifier_ligne(ws, "R_ABC002", statut="abandonnée") == {"Statut": ("en émission", "abandonnée")}
     assert _valeur(ws, 2, "Statut") == "émise" and _valeur(ws, 3, "Statut") == "abandonnée"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Constats de revue de F-25
+# ──────────────────────────────────────────────────────────────────────
+#
+# Rouges sur le code du commit 4e696a6 : T-RGF-01b, T-RGF-04c, T-RGF-13d, T-RGF-14b, T-RGF-17b (cas
+# « caractère de contrôle »), T-RGF-19d, T-RGF-19e, T-RGF-22b (statuts « émise » et vide). Les autres
+# cas gardent un comportement déjà correct que rien ne testait : chacun a été vu rouge, code cassé
+# exprès (AGENTS.md § 5).
+
+
+@pytest.mark.parametrize("total", [Decimal("NaN"), Decimal("Infinity")], ids=["nan", "infini"])
+def test_t_rgf_01b_ligne_pour_emission_refuse_un_total_qui_n_est_pas_un_montant(total):
+    """T-RGF-01b — `ligne_pour_emission` refuse un total `Decimal` qui n'est pas un montant (NaN,
+    infini) : `RegistreInvalide`. Aujourd'hui, NaN est accepté (la cellule écrite se relit vide) et
+    l'infini lève `decimal.InvalidOperation`, qui n'est pas une `ValueError`."""
+    reg = _reg()
+    with pytest.raises(reg.RegistreInvalide):
+        _pour_emission(total_ht=total)
+
+
+@pytest.mark.parametrize("second", ["R_ABC_001", "R_ABC001​"], ids=["tiret-bas-avant-le-rang", "espace-invisible"])
+def test_t_rgf_04c_doublon_au_meme_numero_de_la_serie(second):
+    """T-RGF-04c — deux lignes qui désignent le même numéro lèvent `RegistreInvalide` : « R_ABC_001 »,
+    que `numerotation` compte au même rang que « R_ABC001 » (`_rangs`), ou « R_ABC001 » suivi d'un
+    espace de largeur nulle (U+200B), invisible dans Excel. Sinon le registre porte deux lignes pour
+    une même facture, et la reprise de l'historique peut la reprendre une seconde fois."""
+    from facturation.master import Master
+
+    reg = _reg()
+    master = Master(factures=[{"N° facture": "R_ABC001", "Statut": "émise"}, {"N° facture": second, "Statut": "émise"}])
+    with pytest.raises(reg.RegistreInvalide):
+        reg.lire_registre(master)
+
+
+CAS_STATUT_INCOHERENT = [
+    # (identifiant, N° du registre sain, dates ajoutées, statut que l'anomalie doit citer)
+    ("en-emission-envoyee", "R_ECO001", dict(date_envoi=date(2026, 12, 2)), "en émission"),
+    ("en-emission-payee", "R_ECO001", dict(date_envoi=date(2026, 12, 2), date_paiement=date(2026, 12, 20)),
+     "en émission"),
+    ("abandonnee-payee", "R_ABC004", dict(date_paiement=date(2026, 12, 20)), "abandonnée"),
+]
+
+
+@pytest.mark.parametrize(("n_facture", "champs", "statut"), [c[1:] for c in CAS_STATUT_INCOHERENT],
+                         ids=[c[0] for c in CAS_STATUT_INCOHERENT])
+def test_t_rgf_13d_statut_incoherent_avec_les_dates(n_facture, champs, statut):
+    """T-RGF-13d — « statut saisi incohérent avec les dates » couvre aussi une ligne « en émission » qui
+    porte une date d'envoi ou de paiement (saisie dans Excel ; `modifier_ligne` la refuse, et elle
+    s'afficherait « payée »), et une ligne « abandonnée » qui porte une date de paiement : une anomalie
+    qui nomme le N° et le statut saisi."""
+    lignes, sessions = _registre_sain()
+    trouvees = _reg().anomalies(_remplacer(lignes, n_facture, **champs), sessions)
+    assert any(n_facture in a and statut in a.casefold() for a in trouvees), trouvees
+
+
+@pytest.mark.parametrize("total", ["157.50", "315.00"], ids=["total-des-seules-lignes-remplies", "vrai-total"])
+def test_t_rgf_14b_ligne_sessions_sans_total(total):
+    """T-RGF-14b — une ligne `Sessions` du N° sans Total HT (ligne 3) : le total ne peut pas être
+    rapproché. `anomalies` le signale en nommant la ligne `Sessions` fautive, que le registre porte
+    le total des seules lignes remplies (157,50 €, aujourd'hui accepté sans bruit) ou le vrai total
+    (315,00 €, aujourd'hui « différent de la somme », sans dire pourquoi)."""
+    reg = _reg()
+    sessions = [_seance("R_ABC001", 157.5, rang=2), _seance("R_ABC001", None, rang=3)]
+    trouvees = reg.anomalies([_ligne(n_facture="R_ABC001", total_ht=Decimal(total))], sessions)
+    assert any("R_ABC001" in a and "Sessions" in a and re.search(r"\b3\b", a) for a in trouvees), trouvees
+
+
+@pytest.mark.parametrize(("total", "anomalie"), [("99.99", False), ("100.00", False), ("100.01", True)],
+                         ids=["total-de-la-facture", "somme-des-lignes", "un-centime-de-trop"])
+def test_t_rgf_14c_total_arrondi_une_seule_fois(total, anomalie):
+    """T-RGF-14c — deux séances de 1,5 h à 33,33 € : chaque ligne `Sessions` porte 50,00 € (49,995
+    arrondi), la facture 99,99 € (somme exacte 99,990 arrondie une fois, § 1.2). Le registre est
+    cohérent à 99,99 € comme à 100,00 € ; à 100,01 €, c'est une anomalie."""
+    reg = _reg()
+    seances = [dataclasses.replace(_seance("R_ABC001", 50, rang=rang), duree_h=1.5, taux=33.33) for rang in (2, 3)]
+    trouvees = reg.anomalies([_ligne(n_facture="R_ABC001", total_ht=Decimal(total))], seances)
+    assert bool(trouvees) is anomalie, trouvees
+
+
+@pytest.mark.parametrize("note", ["=1+1", "bip\x07"], ids=["formule", "caractere-de-controle"])
+def test_t_rgf_17b_valeur_refusee_ne_laisse_aucune_cellule(note):
+    """T-RGF-17b — `ajouter_ligne` et `modifier_ligne` refusent une note qui serait une formule
+    (« =1+1 ») ou qui porte un caractère de contrôle qu'un classeur ne peut pas enregistrer (BEL) :
+    `RegistreInvalide`, et la feuille n'est pas modifiée. Aujourd'hui, le caractère de contrôle lève
+    `IllegalCharacterError` (qui n'est pas une `ValueError`) après que le N° et l'école de la ligne
+    ajoutée ont été écrits."""
+    reg = _reg()
+    wb, ws = _feuille([_facture("R_ABC001", statut="émise", emission=date(2026, 12, 1), total=90)])
+    avant = _instantane(ws)
+    with pytest.raises(reg.RegistreInvalide):
+        reg.ajouter_ligne(ws, {"N° facture": "R_ABC002", "École": "ABC", "Note": note})
+    assert _instantane(ws) == avant
+    with pytest.raises(reg.RegistreInvalide):
+        reg.modifier_ligne(ws, "R_ABC001", note=note)
+    assert _instantane(ws) == avant
+
+
+@pytest.mark.parametrize("champ", ["date_envoi", "date_paiement"])
+def test_t_rgf_19c_envoi_et_paiement_refuses_en_emission(champ):
+    """T-RGF-19c — une facture « en émission » (son contrôle après écriture n'est pas vert) ne peut pas
+    être notée envoyée ni payée : `RegistreInvalide` qui cite « en émission », feuille inchangée."""
+    reg = _reg()
+    wb, ws = _feuille([_facture("R_ABC001", statut="en émission", emission=date(2026, 12, 1),
+                                echeance=date(2027, 1, 31), total=90)])
+    avant = _instantane(ws)
+    with pytest.raises(reg.RegistreInvalide) as exc:
+        reg.modifier_ligne(ws, "R_ABC001", **{champ: date(2026, 12, 2)})
+    assert "en émission" in str(exc.value), str(exc.value)
+    assert _instantane(ws) == avant
+
+
+def test_t_rgf_19d_envoi_saisi_apres_le_paiement_ne_recule_pas_le_statut():
+    """T-RGF-19d — une facture payée dans Excel sans toucher au statut (ADR031 : date de paiement
+    remplie, statut vide) : la date d'envoi notée ensuite ne fait pas écrire « envoyée » (un statut
+    en retrait sur la date de paiement) ; le statut reste vide ou devient « payée »."""
+    reg = _reg()
+    wb, ws = _feuille([_facture("R_ABC001", statut=None, emission=date(2026, 12, 1), echeance=date(2027, 1, 31),
+                                total=90, paiement=date(2026, 12, 20))])
+    changements = reg.modifier_ligne(ws, "R_ABC001", date_envoi=date(2026, 12, 2))
+    assert _jour(_valeur(ws, 2, "Date d'envoi")) == date(2026, 12, 2)
+    assert _valeur(ws, 2, "Statut") in (None, "", "payée"), changements
+
+
+def test_t_rgf_19e_refus_du_statut_emise_ne_parle_pas_d_abandon():
+    """T-RGF-19e — demander « émise » pour une facture « envoyée » est refusé par un message qui parle
+    de ce passage-là, pas d'abandon (aujourd'hui : « une facture envoyée ou payée ne s'abandonne
+    pas »)."""
+    reg = _reg()
+    wb, ws = _feuille_des_refus()
+    with pytest.raises(reg.RegistreInvalide) as exc:
+        reg.modifier_ligne(ws, "R_ABC002", statut="émise")
+    message = str(exc.value)
+    assert "R_ABC002" in message and "émise" in message, message
+    assert "abandon" not in message.casefold(), message
+
+
+CAS_ABANDON_REFUSE = [
+    # (identifiant, cellules de la ligne R_ABC001, émise le 01/12/2026)
+    ("emise", dict(statut="émise")),
+    ("emise-envoyee-et-payee-dans-excel", dict(statut="émise", envoi=date(2026, 12, 2), paiement=date(2026, 12, 20))),
+    ("statut-vide", dict(statut=None)),
+    ("statut-vide-envoyee-et-payee-dans-excel", dict(statut=None, envoi=date(2026, 12, 2),
+                                                     paiement=date(2026, 12, 20))),
+    ("envoyee", dict(statut="envoyée", envoi=date(2026, 12, 2))),
+    ("payee", dict(statut="payée", envoi=date(2026, 12, 2), paiement=date(2026, 12, 20))),
+]
+
+
+@pytest.mark.parametrize("cellules", [c[1] for c in CAS_ABANDON_REFUSE], ids=[c[0] for c in CAS_ABANDON_REFUSE])
+def test_t_rgf_22b_abandon_seulement_en_emission(cellules):
+    """T-RGF-22b — `modifier_ligne(statut="abandonnée")` n'abandonne qu'une facture « en émission »
+    (§ 8.7 : « jamais pour une facture émise » ; Q-E2 et Q-E3, § 16 : une facture émise se corrige par
+    un avoir). Une facture émise, au statut vide, envoyée ou payée, y compris quand ses dates ont été
+    saisies dans Excel sans toucher au statut (ADR031), est refusée (`RegistreInvalide` qui cite le
+    N°), feuille inchangée. Sinon ses lignes `Sessions` sortiraient de l'anti-doublon et ses séances
+    seraient refacturées. L'abandon d'une facture « en émission » reste permis (T-RGF-22)."""
+    reg = _reg()
+    wb, ws = _feuille([_facture("R_ABC001", emission=date(2026, 12, 1), echeance=date(2027, 1, 31), total=90,
+                                **cellules)])
+    avant = _instantane(ws)
+    with pytest.raises(reg.RegistreInvalide) as exc:
+        reg.modifier_ligne(ws, "R_ABC001", statut="abandonnée")
+    assert "R_ABC001" in str(exc.value), str(exc.value)
+    assert _instantane(ws) == avant
