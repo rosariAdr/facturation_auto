@@ -20,7 +20,8 @@ Lecture d'une ligne :
   (`abc` → `ABC`, comme pour la numérotation), le n° de contrat sans espaces autour ("" quand
   la cellule est vide). Une école peut avoir plusieurs lignes, une par contrat, à condition
   que chacune porte un n° de contrat distinct : deux lignes sans n°, une ligne sans n° à côté
-  d'une ligne avec n°, ou le même n° deux fois sont refusés, comme une ligne remplie sans
+  d'une ligne avec n°, ou le même n° deux fois (à la casse et à la forme Unicode près, comme
+  `heures.ligne_tarif` compare les `Réf. contrat`) sont refusés, comme une ligne remplie sans
   code école ;
 - `Statut lot` vaut `Lot 1`, `Plus tard` ou `Hors facturation` (la liste de MASTER_SCHEMA),
   sans tenir compte de la casse ni des espaces ; vide, l'école n'est dans aucun lot ;
@@ -427,8 +428,17 @@ def _une_erreur(erreurs: list[str]) -> str:
     return f"{ONGLET} : {len(erreurs)} erreurs à corriger.\n" + "\n".join(f"- {e}" for e in erreurs)
 
 
+def _forme_contrat(contrat: str) -> str:
+    """Forme de comparaison d'un n° de contrat : NFC, sans casse (« CTR-1 » et « ctr-1 » sont le même)."""
+    return unicodedata.normalize("NFC", contrat).casefold()
+
+
 def _doublon(ecole: str, contrat: str, deja: list[str]) -> str | None:
-    """Pourquoi une nouvelle ligne de l'école ne peut pas s'ajouter à celles déjà lues ; None si elle le peut."""
+    """Pourquoi une nouvelle ligne de l'école ne peut pas s'ajouter à celles déjà lues ; None si elle le peut.
+
+    Deux n° de contrat qui ne diffèrent que par la casse ou la forme Unicode désignent le même
+    contrat : une faute de frappe ne fait pas un second contrat (ni un second brouillon).
+    """
     if not deja:
         return None
     if not contrat or "" in deja:
@@ -438,12 +448,19 @@ def _doublon(ecole: str, contrat: str, deja: list[str]) -> str | None:
             f"{ONGLET} : école {ecole} en double, sans « {_CONTRAT} » pour distinguer ses lignes{connus}. "
             f"Une seule ligne par école, ou une ligne par contrat, chacune avec son « {_CONTRAT} »."
         )
-    if contrat in deja:
+    meme = next((lu for lu in deja if _forme_contrat(lu) == _forme_contrat(contrat)), None)
+    if meme is None:
+        return None
+    if meme == contrat:
         return (
             f"{ONGLET} : école {ecole} en double, avec le même « {_CONTRAT} » « {contrat} » sur deux "
             "lignes. Une seule ligne par contrat."
         )
-    return None
+    return (
+        f"{ONGLET} : école {ecole} en double, avec le même « {_CONTRAT} » à la casse près sur deux "
+        f"lignes (« {meme} » et « {contrat} »). Une seule ligne par contrat : écrivez son n° une seule "
+        "fois, comme sur le contrat signé."
+    )
 
 
 def regles_par_ecole(lignes: Iterable[Mapping[str, Any]]) -> dict[tuple[str, str], RegleEcole]:
@@ -465,7 +482,8 @@ def regles_par_ecole(lignes: Iterable[Mapping[str, Any]]) -> dict[tuple[str, str
     Raises:
         ValueError: colonne de MASTER_SCHEMA absente (aussitôt) ; ligne remplie sans code
             école, code école mal formé ; école sur plusieurs lignes (même à la casse ou aux
-            espaces près) sans n° de contrat distinct sur chacune ; valeur illisible sur la
+            espaces près) sans n° de contrat distinct sur chacune (le n° de contrat se compare
+            sans tenir compte de la casse) ; valeur illisible sur la
             ligne d'une école qui n'est pas hors lot. Un seul message rapporte toutes ces
             erreurs ; chacune nomme l'école, la colonne et la valeur.
     """

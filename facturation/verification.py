@@ -7,8 +7,9 @@ d'ATTENTION ne bloque pas encore mais le deviendra à un lot suivant.
 Depuis P-0b, la vérification signale aussi en ATTENTION chaque onglet de suivi que l'outil
 n'a pas pu lire (`Master.suivi_invalide`) et chaque perte qu'un enregistrement du MASTER par
 l'outil entraînerait (`master.fidelite_aller_retour`, qui travaille sur une copie temporaire).
-`💡 [proposé — à valider]` Un MASTER que `lire_master` refuse (colonne obligatoire manquante…)
-est signalé en ATTENTION, pour ne pas changer le code de retour de cette commande.
+Un MASTER que `lire_master` refuse (colonne obligatoire manquante, fichier illisible…) est une
+ERREUR : toute préparation échouerait (revue de P-0b). Un MASTER qui ne s'ouvre pas parce qu'il
+est ouvert dans Excel ou verrouillé reste une ATTENTION, comme le classeur ouvert.
 
 Rien n'est écrit : la vérification ne fait que lire.
 """
@@ -150,12 +151,17 @@ def _verifier_donnees(profil: Profil) -> list[Constat]:
 
 
 def _verifier_lecture_et_fidelite(profil: Profil) -> list[Constat]:
-    """Onglets de suivi illisibles et pertes d'un enregistrement par l'outil : une ATTENTION chacun."""
+    """MASTER refusé par l'outil : une ERREUR. Onglets de suivi illisibles et pertes d'un
+    enregistrement par l'outil : une ATTENTION chacun."""
     constats: list[Constat] = []
     try:
         lu = master.lire_master(profil.master)
-    except (master.MasterInvalide, master.MasterVerrouille, OSError) as exc:
+    except master.MasterVerrouille as exc:  # classeur ouvert ou verrouillé : passager
         constats.append(Constat(ATTENTION, "MASTER", f"lecture par l'outil impossible : {exc}"))
+    except (master.MasterInvalide, OSError) as exc:
+        constats.append(Constat(
+            ERREUR, "MASTER", f"refusé par l'outil, aucune facture ne peut être préparée : {exc}",
+        ))
     else:
         for onglet, message in lu.suivi_invalide.items():
             constats.append(Constat(ATTENTION, "MASTER", f"onglet de suivi « {onglet} » ignoré : {message}"))

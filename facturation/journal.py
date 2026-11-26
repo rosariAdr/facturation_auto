@@ -25,11 +25,15 @@ Lectures retenues (`💡 [proposé — à valider]`) :
   (à corriger), les valeurs de `validation.DECISIONS` (F-17) ;
 - une demande de correction dont le contenu change passe « à revalider » ; seule une facture
   refusée dont le contenu change redevient « à valider » (Q-E1) ;
-- une pièce `<N°>.json` dont le champ `n_facture` diffère du nom du fichier est refusée.
+- une pièce `<N°>.json` dont le champ `n_facture` diffère du nom du fichier est refusée ;
+- une pièce abîmée (vide après un arrêt brutal, tronquée) lève `FichierAbime`, dont le message
+  nomme le n° et ne conseille jamais de la supprimer : une pièce réserve son n° et n'est jamais
+  recréée (revue de P-0b).
 """
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
@@ -38,7 +42,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from facturation import chemins
-from facturation.fichiers import FichierAbime, ajouter_jsonl, en_json, lire_json, lire_jsonl, masquer_secrets
+from facturation.fichiers import FichierAbime, ajouter_jsonl, en_json, lire_jsonl, masquer_secrets
 
 if TYPE_CHECKING:
     from facturation.config import Profil
@@ -212,10 +216,37 @@ def etat_validation(*, bloque: bool, empreinte: str, derniere: Mapping[str, Any]
     return _ETAT_DE_LA_DECISION[decision]
 
 
+def _lire_json_piece(fichier: Path, n_facture: str, nature: str) -> Any:
+    """Contenu JSON d'une pièce d'émission.
+
+    Contrairement à `fichiers.lire_json`, le message d'erreur ne conseille jamais de supprimer le
+    fichier : une pièce réserve son n° et l'outil ne la refait jamais ; la supprimer libérerait
+    le n°, ou repasserait une facture émise « en émission ».
+
+    Raises:
+        FichierAbime: pièce illisible ; le message nomme le n°, le fichier et la ligne.
+    """
+    try:
+        return json.loads(fichier.read_text(encoding="utf-8-sig"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        if isinstance(exc, json.JSONDecodeError):
+            cause = f"ligne {exc.lineno} : {exc.msg}"
+        else:
+            cause = "ce n'est pas du texte UTF-8"
+        raise FichierAbime(
+            f"{nature} de la facture {n_facture} abîmée : {fichier}, {cause}. Elle réserve le n° "
+            f"{n_facture} et l'outil ne la refait jamais : gardez-la à sa place et restaurez-la depuis "
+            "une copie du dossier (corbeille, historique des versions de Google Drive) avant de relancer."
+        ) from exc
+
+
 def _lire_piece(fichier: Path, profil: "Profil", statut_abandon: bool) -> PieceEmission:
-    donnees = lire_json(fichier)
+    donnees = _lire_json_piece(fichier, fichier.stem, "Pièce d'émission")
     if not isinstance(donnees, dict):
-        raise FichierAbime(f"Pièce d'émission abîmée : {fichier} (un objet JSON est attendu).")
+        raise FichierAbime(
+            f"Pièce d'émission de la facture {fichier.stem} abîmée : {fichier} (un objet JSON est attendu). "
+            "Elle réserve ce n° : gardez-la à sa place et restaurez-la depuis une copie du dossier."
+        )
     entite = donnees.get("entite")
     if entite != profil.entite:
         raise ValueError(
@@ -232,7 +263,14 @@ def _lire_piece(fichier: Path, profil: "Profil", statut_abandon: bool) -> PieceE
     if n_facture != fichier.stem:
         raise FichierAbime(f"Pièce d'émission {fichier} : elle porte le n° « {n_facture} », pas « {fichier.stem} ».")
     finale = fichier.with_name(f"{fichier.stem}.final.json")
-    final = lire_json(finale) if finale.is_file() else None
+    final = None
+    if finale.is_file():
+        final = _lire_json_piece(finale, n_facture, "Pièce finale")
+        if not isinstance(final, dict):
+            raise FichierAbime(
+                f"Pièce finale de la facture {n_facture} abîmée : {finale} (un objet JSON est attendu). "
+                "La facture est émise : gardez la pièce à sa place et restaurez-la depuis une copie du dossier."
+            )
     if statut_abandon:
         statut = ABANDONNEE
     else:

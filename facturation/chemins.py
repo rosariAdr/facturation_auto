@@ -18,12 +18,14 @@ MASTER réel, contrats des vagues 3 à 5, § 15).
 
 Lectures retenues (`💡 [proposé — à valider]`) : `.git` peut être un dossier (clone) ou un
 fichier (copie de travail `git worktree`) ; un n° de facture ou un code école qui contient un
-séparateur de chemin est refusé.
+séparateur de chemin est refusé ; un mois écrit avec des chiffres non ASCII (« ２０２６-12 ») est
+refusé ; la racine est comparée après résolution (« .. », liens et jonctions suivis).
 """
 
 from __future__ import annotations
 
 import calendar
+import os
 import re
 from datetime import date
 from pathlib import Path
@@ -48,7 +50,8 @@ DOSSIER_SORTIES = "_sorties"
 NOM_JOURNAL = "journal.jsonl"
 NOM_JOURNAL_TACHE = "journal_tache.jsonl"
 
-_MOIS_RE = re.compile(r"(\d{4})-(0[1-9]|1[0-2])")
+# Chiffres ASCII seulement : « ２０２６-12 » ferait un second dossier `_sorties/` pour le même mois.
+_MOIS_RE = re.compile(r"([0-9]{4})-(0[1-9]|1[0-2])")
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -128,15 +131,23 @@ def cle_seance(seance: "Seance") -> str:
 def refuser_racine_dans_un_depot(racine: Path) -> None:
     """Refuse une racine de données placée dans un dépôt git : aucune donnée réelle dans le dépôt.
 
+    La racine est comparée après résolution (`resolve`) : `<dépôt>/../donnees` est hors du dépôt,
+    et une jonction ou un lien symbolique qui mène dans un dépôt y est.
+
     Raises:
         ValueError: la racine, ou l'un de ses parents, contient `.git` (dossier d'un clone ou
             fichier d'une copie de travail).
     """
-    chemin = Path(racine).expanduser().absolute()
+    ecrite = Path(racine).expanduser()
+    try:
+        chemin = ecrite.resolve()
+    except (OSError, RuntimeError):  # lecteur absent, boucle de liens : « .. » au moins est résolu
+        chemin = Path(os.path.abspath(ecrite))
     for dossier in (chemin, *chemin.parents):
         if (dossier / ".git").exists():
+            designation = str(chemin) if chemin == ecrite.absolute() else f"{ecrite} (soit {chemin})"
             raise ValueError(
-                f"Racine de données refusée : {chemin} est dans le dépôt git {dossier}. Aucune donnée "
+                f"Racine de données refusée : {designation} est dans le dépôt git {dossier}. Aucune donnée "
                 "réelle ne vit dans un dépôt : placez la racine ailleurs (par exemple sur le lecteur "
                 "Google Drive) et corrigez [donnees] racine dans le profil."
             )

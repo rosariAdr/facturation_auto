@@ -9,18 +9,24 @@ Primitives partagées par la préparation, l'émission, le registre et les signa
 - **création exclusive** (`creer_json_exclusif`) : un fichier qui existe déjà n'est jamais
   remplacé ;
 - **JSON Lines** (`ajouter_jsonl`, `lire_jsonl`) : ajout seul, une ligne compacte par appel ;
-  une dernière ligne tronquée (écriture interrompue) est ignorée avec un avertissement ;
+  une dernière ligne tronquée (écriture interrompue) est ignorée avec un avertissement à la
+  lecture, et coupée avant l'ajout suivant ;
 - **empreintes** (`empreinte`, `empreinte_fichier`) : sha256 du JSON canonique (clés triées,
   séparateurs `(",", ":")`, `ensure_ascii=False`, encodé en UTF-8) ; aucun `float` n'y entre ;
 - **secrets** (`masquer_secrets`) : toute adresse `schéma://…` devient « <adresse masquée> ».
 
 Lectures retenues (`💡 [proposé — à valider]`) : `en_json` refuse un `set` (non figé, donc sans
 ordre stable) et un nombre non fini (`float` ou `Decimal`) ; un `datetime` sans fuseau s'écrit
-en ISO sans décalage ; les clés d'un dictionnaire doivent être des textes.
+en ISO sans décalage ; les clés d'un dictionnaire doivent être des textes. Revue de P-0b :
+`ajouter_jsonl` coupe une dernière ligne illisible sans « \\n » (un seul avertissement) et
+termine par « \\n » une dernière ligne lisible qui n'en a pas ; un journal « UTF-8 avec BOM » se
+lit ; une sauvegarde passe par un temporaire mis sur disque avant de prendre son nom définitif ;
+`enregistrer_classeur_atomique` met le temporaire sur disque (`fsync`) avant `os.replace`.
 """
 
 from __future__ import annotations
 
+import codecs
 import dataclasses
 import hashlib
 import json
@@ -245,8 +251,10 @@ def creer_json_exclusif(chemin: Path, donnees: Any) -> bool:
 def enregistrer_classeur_atomique(wb: Any, chemin: Path) -> None:
     """Enregistre un classeur openpyxl de façon atomique.
 
-    Le classeur est enregistré dans un fichier temporaire du même dossier, relu
-    (`load_workbook(read_only=True)`) pour s'assurer qu'il s'ouvre, puis substitué à l'original.
+    Le classeur est enregistré dans un fichier temporaire du même dossier, mis sur disque
+    (`fsync`, comme `ecrire_*_atomique` : une coupure de courant ne laisse jamais un classeur
+    vide sous le nom de l'original), relu (`load_workbook(read_only=True)`) pour s'assurer qu'il
+    s'ouvre, puis substitué à l'original.
 
     Raises:
         ClasseurVerrouille: le système refuse le remplacement (classeur ouvert dans Excel, ou en
@@ -258,6 +266,9 @@ def enregistrer_classeur_atomique(wb: Any, chemin: Path) -> None:
     temporaire = _temporaire(chemin)
     try:
         wb.save(temporaire)
+        # Écriture permise : sous Windows, `fsync` exige un descripteur ouvert en écriture.
+        with open(temporaire, "r+b") as enregistre:
+            os.fsync(enregistre.fileno())
         # Par un fichier ouvert : openpyxl refuse un nom qui ne finit pas par .xlsx.
         with open(temporaire, "rb") as source:
             relu = load_workbook(source, read_only=True)
@@ -281,6 +292,10 @@ def sauvegarder_fichier(chemin: Path, dossier: Path | None = None, *, horodatage
     deux sauvegardes dans la même seconde prennent un suffixe `-1`, `-2`… : aucune sauvegarde
     n'est jamais écrasée.
 
+    La copie est d'abord écrite dans un temporaire du dossier (`<nom>.tmp-<pid>`), mise sur disque
+    (`fsync`), puis renommée sans rien écraser : un arrêt brutal ne laisse jamais, sous un nom de
+    sauvegarde, une copie tronquée qui a l'air valide.
+
     Returns:
         Le chemin de la copie.
     """
@@ -288,23 +303,47 @@ def sauvegarder_fichier(chemin: Path, dossier: Path | None = None, *, horodatage
     dossier = Path(dossier) if dossier is not None else chemin.parent / DOSSIER_SAUVEGARDES
     dossier.mkdir(parents=True, exist_ok=True)
     base = f"{chemin.stem}_{(horodatage or datetime.now()).strftime(_FORMAT_HORODATAGE)}"
-    rang = 0
-    while True:
-        copie = dossier / f"{base}{f'-{rang}' if rang else ''}{chemin.suffix}"
-        try:
-            destination = open(copie, "xb")
-        except FileExistsError:
+    temporaire = _temporaire(dossier / chemin.name)
+    try:
+        with open(temporaire, "wb") as destination, open(chemin, "rb") as source:
+            shutil.copyfileobj(source, destination)
+            destination.flush()
+            os.fsync(destination.fileno())
+        rang = 0
+        while True:
+            copie = dossier / f"{base}{f'-{rang}' if rang else ''}{chemin.suffix}"
+            if _renommer_sans_ecraser(temporaire, copie):
+                return copie
             rang += 1
-            continue
+    except BaseException:
+        _supprimer(temporaire)
+        raise
+
+
+def _renommer_sans_ecraser(source: Path, cible: Path) -> bool:
+    """Renomme `source` en `cible` si `cible` n'existe pas ; rend False, sans rien toucher, sinon.
+
+    Sous Windows, `os.rename` refuse une cible existante. Ailleurs, un lien physique crée la cible
+    seulement si elle est libre ; sur un système qui ne les connaît pas, la cible est vérifiée
+    juste avant le renommage.
+    """
+    if os.name == "nt":
         try:
-            with destination, open(chemin, "rb") as source:
-                shutil.copyfileobj(source, destination)
-                destination.flush()
-                os.fsync(destination.fileno())
-        except BaseException:
-            _supprimer(copie)
-            raise
-        return copie
+            os.rename(source, cible)
+        except FileExistsError:
+            return False
+        return True
+    try:
+        os.link(source, cible)
+    except FileExistsError:
+        return False
+    except OSError:  # liens physiques non pris en charge (certains lecteurs réseau)
+        if cible.exists():
+            return False
+        os.rename(source, cible)
+        return True
+    _supprimer(source)
+    return True
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -312,9 +351,70 @@ def sauvegarder_fichier(chemin: Path, dossier: Path | None = None, *, horodatage
 # ──────────────────────────────────────────────────────────────────────
 
 
+_BLOC_LECTURE = 1 << 16
+
+
+def _debut_derniere_ligne(fichier: Any, taille: int) -> int:
+    """Position du premier octet après le dernier « \\n » du fichier (0 s'il n'y en a pas)."""
+    fin = taille
+    while fin > 0:
+        debut = max(0, fin - _BLOC_LECTURE)
+        fichier.seek(debut)
+        bloc = fichier.read(fin - debut)
+        position = bloc.rfind(b"\n")
+        if position >= 0:
+            return debut + position + 1
+        fin = debut
+    return 0
+
+
+def _ligne_lisible(brute: bytes, *, en_tete: bool) -> bool:
+    """La ligne se lit-elle en JSON ? (BOM toléré en tête de fichier.)"""
+    if en_tete and brute.startswith(codecs.BOM_UTF8):
+        brute = brute[len(codecs.BOM_UTF8):]
+    try:
+        json.loads(brute.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    return True
+
+
+def _reparer_fin(chemin: Path, fichier: Any) -> None:
+    """Prépare l'ajout dans un journal dont la dernière ligne n'a pas de « \\n ».
+
+    - dernière ligne illisible (écriture interrompue) : coupée, avec un avertissement ;
+    - dernière ligne lisible (écrite à la main sans fin de ligne) : terminée par « \\n ».
+
+    Sans cela, l'enregistrement neuf serait collé à cette ligne, et le journal deviendrait
+    illisible (`FichierAbime`) avec l'événement neuf perdu.
+    """
+    taille = fichier.seek(0, os.SEEK_END)
+    if taille == 0:
+        return
+    fichier.seek(taille - 1)
+    if fichier.read(1) == b"\n":
+        return
+    debut = _debut_derniere_ligne(fichier, taille)
+    fichier.seek(debut)
+    derniere = fichier.read(taille - debut)
+    if not derniere.strip() or _ligne_lisible(derniere, en_tete=debut == 0):
+        fichier.seek(0, os.SEEK_END)
+        fichier.write(b"\n")
+        return
+    fichier.truncate(debut)
+    warnings.warn(
+        f"{chemin} : dernière ligne incomplète (écriture interrompue), coupée avant l'ajout.",
+        UserWarning,
+        stacklevel=3,
+    )
+
+
 def ajouter_jsonl(chemin: Path, enregistrement: Mapping[str, Any]) -> None:
     """Ajoute une ligne JSON compacte au fichier (créé avec ses dossiers au besoin), puis
     `flush` et `fsync`. L'enregistrement passe d'abord par `en_json`.
+
+    Une dernière ligne sans « \\n » est d'abord réparée : coupée si elle est illisible (écriture
+    interrompue, avec un avertissement), terminée par « \\n » si elle est lisible.
 
     Raises:
         TypeError: l'enregistrement n'est pas un `Mapping`, ou contient un nombre non fini ou un
@@ -327,7 +427,9 @@ def ajouter_jsonl(chemin: Path, enregistrement: Mapping[str, Any]) -> None:
     ligne = json.dumps(en_json(enregistrement), ensure_ascii=False, separators=(",", ":"), allow_nan=False)
     chemin = Path(chemin)
     chemin.parent.mkdir(parents=True, exist_ok=True)
-    with open(chemin, "ab") as destination:
+    # « a+b » : lecture permise pour réparer la fin ; chaque écriture va en fin de fichier.
+    with open(chemin, "a+b") as destination:
+        _reparer_fin(chemin, destination)
         destination.write(ligne.encode("utf-8") + b"\n")
         destination.flush()
         os.fsync(destination.fileno())
@@ -337,7 +439,8 @@ def lire_jsonl(chemin: Path) -> list[dict[str, Any]]:
     """Enregistrements d'un fichier JSON Lines, dans l'ordre ; fichier absent → [].
 
     Une dernière ligne sans fin de ligne et illisible (écriture interrompue) est ignorée, avec
-    un avertissement. Les lignes vides sont ignorées.
+    un avertissement. Les lignes vides sont ignorées. Un fichier « UTF-8 avec BOM » (enregistré
+    par le Bloc-notes) se lit comme sans BOM, comme le fait `lire_json`.
 
     Raises:
         FichierAbime: ligne illisible ailleurs, ou qui n'est pas un objet JSON ; le message nomme
@@ -348,6 +451,8 @@ def lire_jsonl(chemin: Path) -> list[dict[str, Any]]:
         octets = chemin.read_bytes()
     except FileNotFoundError:
         return []
+    if octets.startswith(codecs.BOM_UTF8):
+        octets = octets[len(codecs.BOM_UTF8):]
     lignes = octets.split(b"\n")
     tronquee = lignes[-1] if lignes[-1].strip() else None  # dernière ligne sans « \n »
     if not lignes[-1].strip():

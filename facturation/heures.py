@@ -14,13 +14,16 @@ Deux calculs, à partir d'une séance de l'agenda (`agenda.Seance`) et des ligne
 
 Montants (P-0b, contrats des vagues 3 à 5, § 1.2) : `montant(h, t)` donne la valeur exacte
 `Decimal(repr(h)) * Decimal(repr(t))` ; un total est la somme exacte, arrondie une seule fois au
-centime par `arrondi_centime` (la moitié vers le haut).
+centime par `arrondi_centime` (la moitié vers le haut). `💡 [proposé — à valider]`
+`arrondi_centime` refuse un `float` (`TypeError`) : arrondi sur sa valeur binaire, il peut être
+faux d'un centime sans alerte (2,675 → 2,67).
 
 Le `Taux HT/h` du MASTER réel est souvent du texte (« 60 €/h », § 15) : un taux se lit en
 nombre, ou en texte de la forme « 60 », « 60 € », « 60 €/h », « 60,5 €/h » ou « 60.50 »
 (espaces, insécables compris, tolérés, y compris autour de « € » et de « / »). La colonne
 `École` de `Tarifs` porte parfois le libellé de l'école : avec les lignes de l'onglet `Écoles`
-(`ecoles=`), la clé trouve la ligne par le code ou par le libellé.
+(`ecoles=`), la clé trouve la ligne par le code ou par le libellé, et le segment école de la
+clé peut lui aussi porter le code ou le libellé (revue de P-0b).
 
 Aucune valeur n'est devinée : un mode inconnu, une `Valeur` manquante, une durée d'agenda
 nulle ou négative, une colonne de `Tarifs` absente, une clé tarif introuvable ou un taux
@@ -402,7 +405,8 @@ def _ligne_correspond(ligne: Mapping[str, Any], cherche: tuple[str, str, str],
     """La ligne de `Tarifs` porte-t-elle l'école, le module et la classe de la clé ?
 
     Sans `ecoles`, la colonne `École` se compare au segment de la clé. Avec les lignes de
-    l'onglet `Écoles`, elle peut porter le code ou le libellé de l'école (§ 15).
+    l'onglet `Écoles`, elle peut porter le code ou le libellé de l'école (§ 15), et `cherche[0]`
+    est déjà le code de l'école de la clé.
 
     Raises:
         ValueError: avec `ecoles`, ligne au module et à la classe de la clé dont l'école est un
@@ -423,6 +427,21 @@ def _ligne_correspond(ligne: Mapping[str, Any], cherche: tuple[str, str, str],
     return code is not None and _comparable(code) == cherche[0]
 
 
+def _code_de_la_cle(cle: str, ecole: str, ecoles: Sequence[Mapping[str, Any]]) -> str:
+    """Code de l'école du segment école de la clé, écrit avec le code ou avec le libellé (§ 15).
+
+    Raises:
+        ValueError: libellé inconnu de l'onglet `Écoles` (ou ambigu) ; le message nomme la clé.
+    """
+    try:
+        code = code_ecole(ecole, ecoles)
+    except ValueError as exc:
+        raise ValueError(
+            f"Clé tarif « {cle} », colonne « Clé tarif » de Correspondances : {exc}"
+        ) from exc
+    return code or ecole
+
+
 def ligne_tarif(cle_tarif: str, tarifs: Iterable[Mapping[str, Any]], *,
                 ecoles: Sequence[Mapping[str, Any]] | None = None) -> dict[str, Any]:
     """Ligne de `Tarifs` désignée par la clé `ÉCOLE|Module|Classe`, `Réf. contrat` comprise.
@@ -433,8 +452,8 @@ def ligne_tarif(cle_tarif: str, tarifs: Iterable[Mapping[str, Any]], *,
     préfixe (`M` ne désigne pas `M1`), ni ligne voisine (autre classe, autre école).
     Les lignes incomplètes et les colonnes en plus sont ignorées ; les en-têtes sont
     lus comme `master.py` les lit (NFC, sans espaces autour), sous leur nom exact.
-    Avec `ecoles` (lignes de l'onglet `Écoles`), la colonne `École` peut porter le code
-    ou le libellé de l'école.
+    Avec `ecoles` (lignes de l'onglet `Écoles`), la colonne `École` comme le segment école
+    de la clé peuvent porter le code ou le libellé de l'école.
 
     Le taux de la ligne est contrôlé (un nombre strictement positif, ou un texte d'une forme
     reconnue). Plusieurs lignes pour la même clé ne sont acceptées que si elles portent
@@ -453,12 +472,15 @@ def ligne_tarif(cle_tarif: str, tarifs: Iterable[Mapping[str, Any]], *,
         ValueError: clé absente ou mal formée ; colonne attendue absente de `Tarifs` ;
             clé introuvable dans `Tarifs` ; taux vide, illisible, nul ou négatif ;
             même clé sur plusieurs lignes aux taux différents ou invalides, ou aux
-            références de contrat différentes ; libellé d'école inconnu (avec `ecoles`).
+            références de contrat différentes ; libellé d'école inconnu, dans `Tarifs` ou dans
+            la clé (avec `ecoles`).
             Le message nomme la clé (ou la colonne absente).
     """
     segments = _segments_cle(cle_tarif)
     cle = SEPARATEUR_CLE.join(segments)
     cherche = tuple(_comparable(s) for s in segments)
+    if ecoles is not None:
+        cherche = (_comparable(_code_de_la_cle(cle, segments[0], ecoles)), *cherche[1:])
 
     lignes = [_par_en_tete(ligne) for ligne in tarifs]
     if lignes:
@@ -543,5 +565,18 @@ def montant(heures: float, taux: float) -> Decimal:
 
 
 def arrondi_centime(valeur: Decimal) -> Decimal:
-    """Arrondi au centime, la moitié vers le haut (59,325 → 59,33), deux décimales écrites."""
+    """Arrondi au centime, la moitié vers le haut (59,325 → 59,33), deux décimales écrites.
+
+    Un entier est accepté (la somme d'une liste vide vaut 0).
+
+    Raises:
+        TypeError: `float` (💡 [proposé — à valider] : arrondi sur sa valeur binaire, 2,675
+            donnerait 2,67 sans alerte ; passez par `montant`, ou par `Decimal(repr(x))`),
+            booléen, ou tout autre type.
+    """
+    if isinstance(valeur, bool) or not isinstance(valeur, (Decimal, int)):
+        raise TypeError(
+            f"Montant attendu en Decimal, reçu {type(valeur).__name__} {valeur!r} : un montant ne "
+            "s'arrondit jamais sur la valeur binaire d'un float (calculez-le avec `montant`)."
+        )
     return Decimal(valeur).quantize(_CENTIEME, rounding=ROUND_HALF_UP)

@@ -20,8 +20,11 @@ Lectures retenues (`💡 [proposé — à valider]`) : un libellé d'école inco
 refusé (§ 15), sauf s'il a la forme d'un code école (majuscules et chiffres, ADR029), rendu
 alors nettoyé, en majuscules (§ 3.3) ; un libellé qui désigne deux codes différents est refusé ;
 `Total HT` devient le `Decimal` du nombre tel qu'il s'écrit ; le statut « abandonnée » de
-`Factures` se reconnaît sans tenir compte de la casse ni des espaces ; une ligne sans école a
-le code "".
+`Factures` se reconnaît sans tenir compte de la casse, des espaces ni de l'accent
+(« abandonnee ») ; le n° abandonné se compare à celui de `Sessions` sans tenir compte de la
+casse ni des espaces ; une ligne sans école a le code "" ; dans `chercher`, une ligne du même
+jour à laquelle il manque une heure (début ou fin) va dans la seconde liste, jamais dans les
+exactes (revue de P-0b).
 """
 
 from __future__ import annotations
@@ -149,12 +152,29 @@ def code_ecole(valeur: Any, ecoles: Sequence[Mapping[str, Any]]) -> str | None:
     )
 
 
+def _sans_accents(texte: str) -> str:
+    """Texte sans signes diacritiques (« abandonnée » → « abandonnee »)."""
+    decompose = unicodedata.normalize("NFD", texte)
+    return unicodedata.normalize("NFC", "".join(c for c in decompose if not unicodedata.combining(c)))
+
+
+def _cle_numero(valeur: Any) -> str:
+    """Forme de comparaison d'un n° de facture : sans espaces, en majuscules (« r_abc001 » → « R_ABC001 »)."""
+    return "".join(_texte(valeur).split()).upper()
+
+
 def numeros_abandonnes(factures: Sequence[Mapping[str, Any]]) -> set[str]:
-    """N° des factures au statut « abandonnée » dans `Factures` (casse et espaces ignorés)."""
+    """N° des factures au statut « abandonnée » dans `Factures`.
+
+    Le statut se reconnaît sans tenir compte de la casse, des espaces ni de l'accent
+    (« Abandonnée », « abandonnee ») ; les n° sont rendus sans espaces et en majuscules, la forme
+    sous laquelle `lire_sessions` compare le n° de chaque ligne de `Sessions`.
+    """
+    statut = _sans_accents(STATUT_ABANDONNEE)
     return {
-        _texte(facture.get("N° facture"))
+        _cle_numero(facture.get("N° facture"))
         for facture in factures
-        if _forme(_texte(facture.get("Statut"))) == STATUT_ABANDONNEE and _texte(facture.get("N° facture"))
+        if _sans_accents(_forme(_texte(facture.get("Statut")))) == statut and _cle_numero(facture.get("N° facture"))
     }
 
 
@@ -252,7 +272,7 @@ def _ligne(rang: int, brute: Mapping[str, Any], ecoles: Sequence[Mapping[str, An
         taux=_nombre(brute.get("Taux"), "Taux"),
         total_ht=_montant(brute.get("Total HT"), "Total HT"),
         summary=_texte(brute.get("Summary calendrier verbatim")),
-        abandonnee=bool(n_facture) and n_facture in abandonnes,
+        abandonnee=bool(n_facture) and _cle_numero(n_facture) in abandonnes,
     )
 
 
@@ -292,7 +312,9 @@ def chercher(ecole: str, debut: datetime, fin: datetime, lignes: Sequence[LigneS
 
     Returns:
         (lignes exactes : même école, même date, même début et même fin à la minute ;
-         lignes du même jour et de la même école sans heure : début et fin vides).
+         lignes du même jour et de la même école auxquelles il manque une heure, début ou fin,
+         à montrer comme des doublons possibles : une séance déjà facturée ne disparaît jamais
+         de la recherche parce qu'une de ses heures n'a pas été saisie).
     """
     code = _texte(ecole).upper()
     jour = debut.date()
@@ -302,9 +324,8 @@ def chercher(ecole: str, debut: datetime, fin: datetime, lignes: Sequence[LigneS
     for ligne in lignes:
         if ligne.abandonnee or ligne.ecole.upper() != code or ligne.date_seance != jour:
             continue
-        if ligne.debut is None and ligne.fin is None:
+        if ligne.debut is None or ligne.fin is None:
             sans_heure.append(ligne)
-        elif (ligne.debut is not None and ligne.fin is not None
-              and _a_la_minute(ligne.debut) == heure_debut and _a_la_minute(ligne.fin) == heure_fin):
+        elif _a_la_minute(ligne.debut) == heure_debut and _a_la_minute(ligne.fin) == heure_fin:
             exactes.append(ligne)
     return exactes, sans_heure
