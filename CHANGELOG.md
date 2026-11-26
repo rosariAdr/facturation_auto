@@ -20,6 +20,13 @@ Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/). Versions : `0
 ### Corrigé (F-18, fiabilisation du gabarit)
 - Formats de nombre sur toutes les lignes de cours ; facture d'une page jusqu'à 18 séances, sauts de page maîtrisés au-delà, bloc du bas jamais coupé ; bas de facture juste au-delà de 60 séances ; libellés et dénomination du client entiers ; traits parasites et bandeau corrigés ; mentions lisibles en Calibri ; contrôle après écriture étendu aux textes fixes et à la formule du net à payer.
 
+### Corrigé (clonage du gabarit)
+- Clonage du gabarit complet : protection des cellules, préfixe texte, lignes et colonnes masquées ou groupées (largeur reprise sur chaque colonne d'un groupe), mise en page, marges, options d'impression, en-têtes et pieds de page, protection de la feuille, affichage, volets figés, zone et titres d'impression sont désormais repris. La sélection d'onglet ne l'est pas, pour qu'Excel ne groupe pas la facture avec l'onglet actif de l'école. Fidélité vérifiée cellule par cellule et propriété par propriété, en mémoire (T-FMT-08) et après enregistrement (T-REC-01).
+- Une fusion du gabarit qui échoue, ou qu'openpyxl ignore sans erreur, arrête la génération avec un message qui nomme la plage, au lieu d'être passée sous silence. Ce que le clonage ne sait pas recopier (mise en forme conditionnelle, validations, images, tableaux, commentaires, styles nommés autres que « Normal ») provoque aussi une erreur explicite.
+- Le gabarit n'est lu sur le disque qu'une fois par processus tant qu'il ne change pas : les factures suivantes d'un même lancement sont clonées 3 à 5 fois plus vite que la première.
+- openpyxl épinglé en 3.1.x : la voie rapide du clonage repose sur une structure interne, dont le contrat est vérifié par T-CLO-01. Si elle change malgré tout, la copie repasse d'elle-même par la voie publique, plus lente mais exacte (T-CLO-04).
+- Tests : clonage du gabarit (T-CLO-01 à 11) et recette d'une facture complète relue depuis le disque (T-REC-01 à 03, marqueur `recette`).
+
 ### Ajouté (F-24, mentions légales de l'ADR030)
 - Bas de facture écrit par le module (`apply_mentions`) : « Total HT », « Net à payer », mention 293 B, déclaration d'activité lue dans `Info / NDA`, échéance datée (émission + 30 jours par défaut), « Pas d'escompte », pénalités exigibles dès le lendemain de l'échéance, indemnité forfaitaire de 40 €.
 - Ligne « N° de contrat » (`ref_contrat`) et champ `echeance` dans la spec de `nouvelle_facture.py` ; aperçu complété.
@@ -64,7 +71,7 @@ Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/). Versions : `0
 - `examples/profil_exemple.toml`, `CHANGELOG.md`.
 
 ### Modifié
-- Clonage du gabarit 8 fois plus rapide : chacun des ~60 styles distincts n'est recopié qu'une fois au lieu d'être recopié pour chacune des ~26 800 cellules stylées ; résultat identique au fichier près, garanti par le nouveau test T-FMT-08. Écriture d'une facture : 5,4 s → 1,3 s sur la machine de référence ; banque de tests deux fois plus rapide.
+- Clonage du gabarit plus rapide : chacun des ~60 styles distincts n'est posé qu'une fois au lieu de l'être pour chacune des ~26 800 cellules stylées. Écriture d'une facture : 5,4 s → 1,3 s sur la machine de référence.
 - `pcf_format.py` déplacé dans le paquet `facturation/` ; entités non limitées à ROSARI/KAUR ; gabarit standard commun `PCF_facture_standard.xlsx` (ADR015), gabarit propre à une entité prioritaire s'il existe.
 - Scripts `nouvelle_facture.py` et `check_coherence.py` : option `--profil`, racine résolue depuis le profil.
 

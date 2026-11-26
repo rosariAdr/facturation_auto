@@ -147,9 +147,11 @@ Une mise en page unique, `facturation/assets/PCF_facture_standard.xlsx`, pour to
 ## Tests
 
 ```bash
-python -m pytest                 # toute la banque (la porte)
-python -m pytest -m regression   # format et rendu des factures
-python -m pytest -m unit         # profil et fonctions pures
+python -m pytest                  # toute la banque (la porte)
+python -m pytest -m unit          # fonctions pures : profil, agenda, MASTER, règles, clonage du gabarit
+python -m pytest -m integration   # scripts et commande facturation
+python -m pytest -m regression    # format et rendu des factures
+python -m pytest -m recette       # facture complète, vérifiée sur le fichier relu
 ```
 
 Tous les tests tournent sur des données fictives créées à la volée. Un défaut connu peut être marqué `xfail` strict : il reste visible dans le rapport et fait échouer la suite le jour où il est corrigé, pour rappeler de retirer le marqueur (les défauts T-FMT-07 du gabarit ont été corrigés par F-18). GitHub Actions rejoue la banque à chaque pull request et à chaque push sur `main`, `dev` et les branches de travail (`feat/**`, `fix/**`, `chore/**`), sous Windows et Ubuntu, avec Python 3.11 et 3.12. Le rendu PDF est sauté si LibreOffice est absent.

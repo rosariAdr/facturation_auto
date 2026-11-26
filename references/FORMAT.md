@@ -142,6 +142,24 @@ Toutes les fonctions qui touchent une facture exigent l'entité en argument nomm
 
 Ordre d'appel : `clone_template` → `apply_emetteur` → `apply_destinataire` → `apply_metadata` → `place_sessions` → `apply_mentions` → `apply_rib` → `apply_print_setup` → `post_mortem` / `verifier_facture`.
 
+### Clonage du gabarit
+
+`clone_template` recopie la feuille `MODELE` à l'identique : valeurs, styles complets
+(police, remplissage, bordure, alignement, protection, format de nombre, préfixe texte),
+largeurs et hauteurs, lignes et colonnes masquées ou groupées, fusions, mise en page,
+marges, options d'impression, en-têtes et pieds de page, protection de la feuille,
+affichage, volets figés, zone et titres d'impression. La sélection d'onglet n'est pas
+reprise, pour qu'Excel ne groupe pas la facture avec l'onglet actif de l'école.
+
+Ce que le clonage ne sait pas recopier arrête la génération avec un message explicite :
+mise en forme conditionnelle, validations de données, images et graphiques, tableaux
+structurés, commentaires et liens, styles nommés autres que « Normal ». Une fusion qui
+échoue, ou qu'openpyxl ignore (plages qui se chevauchent), est signalée de la même façon.
+Ajouter l'un de ces éléments au gabarit suppose d'étendre `_lire_plan_gabarit`.
+
+Le gabarit n'est lu sur le disque qu'une fois par processus, puis relu s'il change. La
+fidélité est vérifiée par T-FMT-08 (en mémoire) et T-REC-01 (après enregistrement).
+
 ---
 
 ## Reconstruire le gabarit

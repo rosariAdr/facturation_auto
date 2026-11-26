@@ -35,7 +35,8 @@ de lire en silence le MASTER d'une autre entité.
 import os
 import re
 from copy import copy as _copy
-from datetime import date, timedelta
+from dataclasses import dataclass
+from datetime import date, time, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -45,8 +46,15 @@ from openpyxl.styles import Alignment, Border, Font, Side
 from openpyxl.utils import column_index_from_string, get_column_letter
 from openpyxl.utils.cell import coordinate_to_tuple
 from openpyxl.workbook.workbook import Workbook
+from openpyxl.worksheet.page import PrintPageSetup
 from openpyxl.worksheet.pagebreak import Break, RowBreak
+from openpyxl.worksheet.views import SheetView
 from openpyxl.worksheet.worksheet import Worksheet
+
+try:  # API interne d'openpyxl : voir _recopier_cellules et tests/unit/test_clonage.py
+    from openpyxl.styles.cell_style import StyleArray
+except ImportError:  # pragma: no cover - openpyxl a déplacé la classe : copie lente mais juste
+    StyleArray = None
 
 # ──────────────────────────────────────────────────────────────────────
 # Chemins
@@ -481,61 +489,320 @@ def _frame_box(ws: Worksheet, rmin: int, rmax: int, cmin: int, cmax: int):
             )
 
 
+# ──────────────────────────────────────────────────────────────────────
+# Clonage du gabarit
+# ──────────────────────────────────────────────────────────────────────
+
+# Valeurs immuables, partageables d'un clone à l'autre ; les autres sont copiées.
+_VALEURS_SIMPLES = (str, int, float, bool, date, time, timedelta)
+
+# Mise en page : tous les attributs sauf `id`, qui pointe vers les réglages d'imprimante
+# du fichier source et n'aurait pas de cible dans le classeur de destination.
+_ATTRIBUTS_MISE_EN_PAGE = tuple(a for a in PrintPageSetup.__attrs__ if a != "id")
+
+# Vue de la feuille : tout l'affichage, sauf la sélection d'onglet. Reprise, `tabSelected`
+# ferait grouper par Excel la facture avec l'onglet actif du classeur de l'école.
+_ATTRIBUTS_VUE = tuple(a for a in SheetView.__attrs__ if a not in ("tabSelected", "workbookViewId"))
+
+# Objets de feuille recopiés tels quels (copie profonde : openpyxl les resérialise).
+_OBJETS_FEUILLE = (
+    "sheet_format", "sheet_properties", "page_margins", "print_options", "HeaderFooter", "protection",
+)
+
+
+@dataclass(frozen=True)
+class _StyleGabarit:
+    """Un style de cellule du gabarit, décrit par les objets publics d'openpyxl."""
+
+    font: object
+    fill: object
+    border: object
+    alignment: object
+    protection: object
+    number_format: str
+    quote_prefix: bool
+    pivot_button: bool
+
+    def poser_sur(self, cellule) -> None:
+        cellule.font = _copy(self.font)
+        cellule.fill = _copy(self.fill)
+        cellule.border = _copy(self.border)
+        cellule.alignment = _copy(self.alignment)
+        cellule.protection = _copy(self.protection)
+        cellule.number_format = self.number_format
+        cellule.quotePrefix = self.quote_prefix
+        cellule.pivotButton = self.pivot_button
+
+
+@dataclass(frozen=True)
+class _PlanGabarit:
+    """Tout ce que le clonage recopie de la feuille MODELE.
+
+    cellules : (ligne, colonne, valeur, indice dans `styles`, ou -1 sans style).
+    colonnes : (lettre, largeur, masquée, niveau de plan), une entrée par colonne.
+    lignes   : (numéro, hauteur, masquée, niveau de plan).
+    fusions  : plages fusionnées, au format « A1:B2 ».
+    feuille  : mise en page, impression et affichage de la feuille.
+    """
+
+    cellules: tuple
+    styles: tuple
+    colonnes: tuple
+    lignes: tuple
+    fusions: tuple
+    feuille: dict
+
+
+# Plans déjà lus : (chemin résolu, date de modification en ns, taille) -> plan.
+_PLANS_GABARIT: dict[tuple[str, int, int], _PlanGabarit] = {}
+
+
+def _plan_gabarit(template_path: Path) -> _PlanGabarit:
+    """Plan du gabarit, relu seulement si le fichier a changé depuis la dernière lecture.
+
+    La lecture du classeur (~0,8 s pour le gabarit standard) n'est ainsi payée qu'une
+    fois par processus, même quand plusieurs factures sont produites d'affilée.
+    """
+    chemin = Path(template_path).resolve()
+    etat = chemin.stat()
+    cle = (str(chemin), etat.st_mtime_ns, etat.st_size)
+    plan = _PLANS_GABARIT.get(cle)
+    if plan is None:
+        for perimee in [k for k in _PLANS_GABARIT if k[0] == cle[0]]:
+            del _PLANS_GABARIT[perimee]
+        plan = _PLANS_GABARIT[cle] = _lire_plan_gabarit(chemin)
+    return plan
+
+
+def _refuser_le_non_recopiable(src_ws: Worksheet) -> None:
+    """Lève ValueError si la feuille MODELE porte un élément que le clonage ne recopie pas.
+
+    Mieux vaut une erreur à la génération qu'une facture qui perd en silence une mise en
+    forme conditionnelle, une liste de validation ou une image ajoutée au gabarit.
+    """
+    absents = []
+    if len(src_ws.conditional_formatting):
+        absents.append("mise en forme conditionnelle")
+    if src_ws.data_validations.dataValidation:
+        absents.append("validation des données")
+    if getattr(src_ws, "_images", None) or getattr(src_ws, "_charts", None):
+        absents.append("image ou graphique")
+    if src_ws.tables:
+        absents.append("tableau structuré")
+    if absents:
+        raise ValueError(
+            "Le gabarit contient des éléments que le clonage ne sait pas recopier : "
+            f"{', '.join(absents)}. Les retirer du gabarit ou étendre _lire_plan_gabarit."
+        )
+
+
+def _plages_sans_onglet(zone: Optional[str]) -> tuple:
+    """« 'MODELE'!$A$1:$R$93 » -> (« $A$1:$R$93 », ), pour la réappliquer à un autre onglet."""
+    if not zone:
+        return ()
+    return tuple(plage.rsplit("!", 1)[-1] for plage in zone.split(","))
+
+
+def _lire_plan_gabarit(chemin: Path) -> _PlanGabarit:
+    """Lit la feuille MODELE et en tire le plan de clonage (voir _PlanGabarit)."""
+    src_wb = load_workbook(chemin)
+    if "MODELE" not in src_wb.sheetnames:
+        raise ValueError(
+            f"Le gabarit {chemin.name} n'a pas d'onglet MODELE "
+            f"(onglets présents : {', '.join(src_wb.sheetnames)})."
+        )
+    src = src_wb["MODELE"]
+    _refuser_le_non_recopiable(src)
+
+    styles: list[_StyleGabarit] = []
+    indice_par_style: dict[int, int] = {}
+    cellules = []
+    for row in src.iter_rows():
+        for cell in row:
+            # Avant le tri des cellules vides : un commentaire peut porter sur l'une d'elles.
+            if cell.comment is not None or cell.hyperlink is not None:
+                raise ValueError(
+                    f"Cellule {cell.coordinate} du gabarit : commentaire ou lien hypertexte, "
+                    "que le clonage ne sait pas recopier."
+                )
+            if cell.value is None and not cell.has_style:
+                continue
+            indice = -1
+            if cell.has_style:
+                # style_id : index du style dans les tables du gabarit, identique pour deux
+                # cellules de même style. Un style n'est donc décrit qu'une fois.
+                connu = indice_par_style.get(cell.style_id)
+                if connu is None:
+                    if cell.style != "Normal":
+                        raise ValueError(
+                            f"Cellule {cell.coordinate} du gabarit : style nommé « {cell.style} », "
+                            "que le clonage ne sait pas recopier (seul « Normal » est pris en charge)."
+                        )
+                    connu = indice_par_style[cell.style_id] = len(styles)
+                    styles.append(_StyleGabarit(
+                        font=_copy(cell.font), fill=_copy(cell.fill), border=_copy(cell.border),
+                        alignment=_copy(cell.alignment), protection=_copy(cell.protection),
+                        number_format=cell.number_format, quote_prefix=bool(cell.quotePrefix),
+                        pivot_button=bool(cell.pivotButton),
+                    ))
+                indice = connu
+            cellules.append((cell.row, cell.column, cell.value, indice))
+
+    colonnes = []
+    for lettre, dim in src.column_dimensions.items():
+        if not (dim.width or dim.hidden or dim.outlineLevel):
+            continue
+        debut = dim.min or column_index_from_string(lettre)
+        # Une dimension peut couvrir plusieurs colonnes (<col min="3" max="5">) : chacune
+        # reçoit la largeur, sinon seule la première la garderait dans le clone.
+        for c in range(debut, (dim.max or debut) + 1):
+            colonnes.append((get_column_letter(c), dim.width, bool(dim.hidden), dim.outlineLevel or 0))
+
+    lignes = tuple(
+        (r, dim.height, bool(dim.hidden), dim.outlineLevel or 0)
+        for r, dim in src.row_dimensions.items()
+        if dim.height or dim.hidden or dim.outlineLevel
+    )
+
+    feuille = {
+        "objets": {nom: _copy(getattr(src, nom)) for nom in _OBJETS_FEUILLE},
+        "page_setup": tuple(
+            (nom, getattr(src.page_setup, nom))
+            for nom in _ATTRIBUTS_MISE_EN_PAGE if getattr(src.page_setup, nom) is not None
+        ),
+        "vue": tuple(
+            (nom, getattr(src.sheet_view, nom))
+            for nom in _ATTRIBUTS_VUE if getattr(src.sheet_view, nom) is not None
+        ),
+        "freeze_panes": src.freeze_panes,
+        "zone_impression": _plages_sans_onglet(src.print_area),
+        "titres_lignes": src.print_title_rows,
+        "titres_colonnes": src.print_title_cols,
+    }
+    return _PlanGabarit(
+        cellules=tuple(cellules), styles=tuple(styles), colonnes=tuple(colonnes), lignes=lignes,
+        fusions=tuple(sorted(str(plage) for plage in src.merged_cells.ranges)), feuille=feuille,
+    )
+
+
+def _recopier_cellules(plan: _PlanGabarit, ws: Worksheet) -> None:
+    """Valeurs et styles des cellules.
+
+    Le gabarit compte ~26 800 cellules stylées pour une soixantaine de styles. Chaque style
+    est posé attribut par attribut sur sa première cellule ; les suivantes reçoivent une
+    copie de son tableau d'index (`_style`, structure interne d'openpyxl), ce qui évite
+    ~27 000 recherches dans les tables de styles du classeur. Ce contrat est vérifié par
+    tests/unit/test_clonage.py et openpyxl est épinglé en 3.1.x ; si la structure change
+    malgré tout, la copie repasse d'elle-même par la voie publique, plus lente mais juste.
+    """
+    index_poses: list = [None] * len(plan.styles)
+    rapide = StyleArray is not None
+    for ligne, colonne, valeur, indice in plan.cellules:
+        if valeur is not None and not isinstance(valeur, _VALEURS_SIMPLES):
+            valeur = _copy(valeur)
+        cellule = ws.cell(row=ligne, column=colonne, value=valeur)
+        if indice < 0:
+            continue
+        deja = index_poses[indice]
+        if deja is not None:
+            # Copie obligatoire : openpyxl modifie ce tableau en place quand on change
+            # ensuite le style d'une cellule ; partagé, il changerait toutes ses voisines.
+            cellule._style = _copy(deja)
+            continue
+        plan.styles[indice].poser_sur(cellule)
+        if rapide:
+            index = getattr(cellule, "_style", None)
+            if isinstance(index, StyleArray):
+                index_poses[indice] = _copy(index)
+            else:
+                rapide = False
+
+
+def _recopier_dimensions(plan: _PlanGabarit, ws: Worksheet) -> None:
+    """Largeurs, hauteurs, lignes et colonnes masquées ou groupées."""
+    for lettre, largeur, masquee, niveau in plan.colonnes:
+        dim = ws.column_dimensions[lettre]
+        if largeur:
+            dim.width = largeur
+        if masquee:
+            dim.hidden = True
+        if niveau:
+            dim.outlineLevel = niveau
+    for numero, hauteur, masquee, niveau in plan.lignes:
+        dim = ws.row_dimensions[numero]
+        if hauteur:
+            dim.height = hauteur
+        if masquee:
+            dim.hidden = True
+        if niveau:
+            dim.outlineLevel = niveau
+
+
+def _recopier_fusions(plan: _PlanGabarit, ws: Worksheet) -> None:
+    """Fusions du gabarit. Une fusion qui ne passe pas arrête la génération.
+
+    Une fusion manquante casse l'en-tête de la facture (bloc destinataire, bon de
+    commande) sans que rien ne le signale : on vérifie donc aussi, après coup, que
+    chaque plage du gabarit figure bien dans l'onglet. openpyxl ignore en effet sans
+    erreur une plage incluse dans une autre déjà fusionnée.
+    """
+    for plage in plan.fusions:
+        try:
+            ws.merge_cells(plage)
+        except Exception as exc:  # openpyxl lève ValueError ou TypeError selon le défaut
+            raise ValueError(
+                f"Fusion {plage} du gabarit impossible à recopier dans l'onglet « {ws.title} » : {exc}"
+            ) from exc
+    recopiees = {str(plage) for plage in ws.merged_cells.ranges}
+    manquantes = [plage for plage in plan.fusions if plage not in recopiees]
+    if manquantes:
+        raise ValueError(
+            f"Fusions du gabarit absentes de l'onglet « {ws.title} » après la copie "
+            f"(plages qui se chevauchent dans le gabarit ?) : {', '.join(manquantes)}"
+        )
+
+
+def _recopier_mise_en_page(plan: _PlanGabarit, ws: Worksheet) -> None:
+    """Mise en page, marges, impression, en-têtes et pieds, protection, vue, volets."""
+    feuille = plan.feuille
+    # sheet_properties d'abord : il porte l'option « ajuster à la page » de page_setup.
+    for nom, objet in feuille["objets"].items():
+        setattr(ws, nom, _copy(objet))
+    for nom, valeur in feuille["page_setup"]:
+        setattr(ws.page_setup, nom, valeur)
+    for nom, valeur in feuille["vue"]:
+        setattr(ws.sheet_view, nom, valeur)
+    if feuille["freeze_panes"]:
+        ws.freeze_panes = feuille["freeze_panes"]
+    if feuille["zone_impression"]:
+        ws.print_area = list(feuille["zone_impression"])
+    if feuille["titres_lignes"]:
+        ws.print_title_rows = feuille["titres_lignes"]
+    if feuille["titres_colonnes"]:
+        ws.print_title_cols = feuille["titres_colonnes"]
+
+
 def _xworkbook_clone_modele(
     template_path: Path, dst_wb: Workbook, new_name: str
 ) -> Worksheet:
-    """Charge MODELE depuis template_path et le recopie cellule par cellule dans dst_wb.
+    """Recopie la feuille MODELE du gabarit dans un nouvel onglet de dst_wb.
 
-    Le gabarit compte environ 26 800 cellules stylées mais une soixantaine de styles
-    distincts. Chaque style source n'est donc recopié qu'une fois (police, remplissage,
-    bordure, alignement, format de nombre) ; les cellules suivantes qui portent le même
-    style reçoivent directement les index du style déjà créé dans dst_wb. Le résultat est
-    identique à une copie attribut par attribut, en 20 à 50 fois moins de temps.
+    Repris à l'identique : valeurs, styles complets (police, remplissage, bordure,
+    alignement, protection, format de nombre, préfixe texte), largeurs et hauteurs, lignes
+    et colonnes masquées ou groupées, fusions, mise en page, marges, options d'impression,
+    en-têtes et pieds de page, protection de la feuille, affichage, volets figés, zone et
+    titres d'impression. Ce que le clonage ne sait pas recopier (mise en forme
+    conditionnelle, validations, images, commentaires, styles nommés autres que
+    « Normal ») provoque une ValueError plutôt qu'une perte silencieuse.
+
+    Le gabarit n'est relu sur le disque que s'il a changé (voir _plan_gabarit).
     """
-    src_wb = load_workbook(template_path)
-    src_ws = src_wb["MODELE"]
-
+    plan = _plan_gabarit(template_path)
     new_ws = dst_wb.create_sheet(new_name)
-
-    # Copie des cellules : un style source -> un style destination, recopié une seule fois.
-    styles_recopies: dict[tuple, object] = {}
-    for row in src_ws.iter_rows():
-        for cell in row:
-            if cell.value is None and not cell.has_style:
-                continue
-            new_cell = new_ws.cell(row=cell.row, column=cell.column)
-            new_cell.value = cell.value
-            if not cell.has_style:
-                continue
-            cle = tuple(cell._style)
-            deja = styles_recopies.get(cle)
-            if deja is not None:
-                new_cell._style = _copy(deja)
-                continue
-            new_cell.font = _copy(cell.font)
-            new_cell.fill = _copy(cell.fill)
-            new_cell.border = _copy(cell.border)
-            new_cell.alignment = _copy(cell.alignment)
-            new_cell.number_format = cell.number_format
-            styles_recopies[cle] = _copy(new_cell._style)
-
-    # Column widths
-    for col_letter, dim in src_ws.column_dimensions.items():
-        if dim.width:
-            new_ws.column_dimensions[col_letter].width = dim.width
-
-    # Row heights
-    for r, dim in src_ws.row_dimensions.items():
-        if dim.height:
-            new_ws.row_dimensions[r].height = dim.height
-
-    # Merges
-    for mr in src_ws.merged_cells.ranges:
-        try:
-            new_ws.merge_cells(str(mr))
-        except Exception:
-            pass
-
+    _recopier_cellules(plan, new_ws)
+    _recopier_dimensions(plan, new_ws)
+    _recopier_fusions(plan, new_ws)
+    _recopier_mise_en_page(plan, new_ws)
     return new_ws
 
 
