@@ -5,6 +5,7 @@ T-CLI-03 à 09 et T-VER-03, 04 : mentions légales et échéance (F-24, ADR030).
 T-CLI-10 : facture de plus de 60 séances (F-18).
 T-FAC-02 : aide du script, devenu l'enveloppe de `facturation.facture` (P-0a).
 T-CLI-12, T-VER-07 à 10 : socle du lot 1 (P-0b) et sa revue.
+T-FAC-18 à T-FAC-25 : contrôles de la facture laissés hors de P-0a, côté script (fix-facture).
 """
 
 from __future__ import annotations
@@ -606,3 +607,260 @@ def test_t_ver_10_master_refuse_par_l_outil_est_une_erreur(tmp_path):
     erreurs = [ligne for ligne in res.stdout.splitlines() if ligne.startswith("[ERREUR]")]
     assert any("Sessions" in e and "Total HT" in e for e in erreurs), res.stdout
     assert res.returncode == 1, res.stdout + res.stderr
+
+
+# ──────────────────────────────────────────────────────────────────────
+# fix-facture — contrôles laissés hors de P-0a, côté script (T-FAC-18 à T-FAC-25)
+# ──────────────────────────────────────────────────────────────────────
+#
+# Un refus de la spec suit le style des refus existants, avant toute écriture : code 1, un message
+# « [ERREUR] » qui nomme la cause, sans trace Python. Les détails (type d'exception, rangs, valeurs) sont dans
+# tests/unit/test_facture.py.
+
+CLASSEUR_ABC = Path("ROSARI", "ABC", "ROSARI_ABC.xlsx")
+# 32 caractères : un de plus que la limite d'Excel.
+TITRE_32 = "R_ABC001 Août 2026 École fictive"
+
+
+def _lignes_fac() -> list[dict]:
+    """Deux lignes, la seconde à trois séances : une séance fautive y est la « séance 3 » de la « ligne 2 »."""
+    return [
+        {"promotion": "M1 S1", "libelle": "[2026][M1 S1][Module A][3H]",
+         "seances": [{"date": "2026-09-15", "heures": 3, "taux": 90}]},
+        {"promotion": "M2 S1", "libelle": "[2026][M2 S1][Module B][6H]",
+         "seances": [{"date": f"2026-09-{jour}", "heures": 2, "taux": 60} for jour in (16, 17, 18)]},
+    ]
+
+
+def _spec_fac(**surcharges) -> dict:
+    """Spec d'exemple à deux lignes (`_lignes_fac`), complétée des surcharges."""
+    spec = json.loads(SPEC_EXEMPLE.read_text(encoding="utf-8"))
+    spec["lignes"] = _lignes_fac()
+    spec.update(surcharges)
+    return spec
+
+
+def _instantane(dossier: Path) -> dict[str, tuple[bytes, int]]:
+    """Contenu et date de modification de chaque fichier sous `dossier`, pour constater que rien n'a été écrit : la
+    date attrape aussi une réécriture à l'identique."""
+    return {
+        p.relative_to(dossier).as_posix(): (p.read_bytes(), p.stat().st_mtime_ns)
+        for p in sorted(dossier.rglob("*")) if p.is_file()
+    }
+
+
+def _classeur_existant(racine: Path) -> Path:
+    """Classeur de l'école ABC qui porte déjà une facture (« R_ABC000 Août 2026 », N° R_ABC000 en D17), daté du
+    01/01/2020 : une réécriture à l'identique se voit aussi."""
+    from openpyxl import Workbook
+
+    classeur = racine / CLASSEUR_ABC
+    classeur.parent.mkdir(parents=True, exist_ok=True)
+    wb = Workbook()
+    wb.active.title = "R_ABC000 Août 2026"
+    wb.active["D17"] = "R_ABC000"
+    wb.save(classeur)
+    os.utime(classeur, ns=(1_577_836_800 * 10**9, 1_577_836_800 * 10**9))
+    return classeur
+
+
+def _message_erreur(res: subprocess.CompletedProcess) -> str:
+    """Le texte qui suit le premier « [ERREUR] » (sortie d'erreur, sinon sortie standard), ou "" s'il n'y en a pas :
+    l'aperçu qui le précède, et qui cite déjà le classeur, n'en fait pas partie."""
+    for flux in (res.stderr, res.stdout):
+        if "[ERREUR]" in flux:
+            return flux[flux.index("[ERREUR]"):]
+    return ""
+
+
+def _refus_du_script(tmp_path: Path, spec: dict, options: tuple = ()) -> str:
+    """Lance le script sur `spec`, avec un classeur d'école qui porte déjà une facture, et attend un refus propre :
+    code 1, sans trace Python, un message « [ERREUR] », et rien d'écrit sous la racine (aucun onglet ajouté au
+    classeur, aucun fichier créé). Rend le message."""
+    racine = tmp_path / "donnees"
+    creer_master(racine)
+    _classeur_existant(racine)
+    avant = _instantane(racine)
+    chemin = tmp_path / "spec.json"
+    chemin.write_text(json.dumps(spec, ensure_ascii=False), encoding="utf-8")
+
+    res = _lancer("scripts/nouvelle_facture.py", str(chemin), "--data-root", str(racine), *options)
+
+    assert res.returncode == 1, res.stdout + res.stderr
+    assert "Traceback" not in res.stderr, res.stderr
+    message = _message_erreur(res)
+    assert message, f"aucun message « [ERREUR] » : {res.stdout + res.stderr}"
+    assert _instantane(racine) == avant, "le refus a laissé un onglet ou un fichier écrit sous la racine"
+    return message
+
+
+def test_t_fac_18_script_apercu_arrondi_au_centime(tmp_path):
+    """T-FAC-18 — `--dry-run` : 1,5 h × 33,33 € s'affiche 50.00 € sur la ligne et au TOTAL HT, au format inchangé
+    (49.99 € avant le correctif, arrondi du float binaire 49,99499…)."""
+    racine = tmp_path / "donnees"
+    creer_master(racine)
+    spec = _spec(tmp_path, lignes=[{"promotion": "M1 S1", "libelle": "Module A",
+                                    "seances": [{"date": "2026-09-15", "heures": 1.5, "taux": 33.33}]}])
+    res = _lancer("scripts/nouvelle_facture.py", str(spec), "--data-root", str(racine), "--dry-run")
+    assert res.returncode == 0, res.stdout + res.stderr
+    seances = [ligne for ligne in res.stdout.splitlines() if ligne.startswith("  | ")]
+    assert len(seances) == 1 and seances[0].endswith("|     50.00 €"), res.stdout
+    assert "TOTAL HT     : 50.00 €" in res.stdout.splitlines(), res.stdout
+
+
+@pytest.mark.parametrize("options", [(), ("--dry-run",)], ids=["ecriture", "dry-run"])
+@pytest.mark.parametrize("seances", ["vide", "absente"])
+def test_t_fac_19_script_refuse_une_ligne_sans_seance(tmp_path, seances, options):
+    """T-FAC-19 — première ligne sans séance (`seances` vide ou absente) : refus avant toute écriture, dès le
+    `--dry-run`, code 1, message « [ERREUR] » qui cite le rang et le libellé de la ligne, sans trace Python, rien
+    d'écrit. Avant le correctif : écrite puis déclarée non conforme (code 2) par un faux écart, ou KeyError brute."""
+    spec = _spec_fac()
+    if seances == "vide":
+        spec["lignes"][0]["seances"] = []
+    else:
+        del spec["lignes"][0]["seances"]
+
+    message = _refus_du_script(tmp_path, spec, options)
+
+    assert spec["lignes"][0]["libelle"] in message, message
+    assert re.search(r"\bligne (n° ?)?1\b", message, re.IGNORECASE), message
+
+
+@pytest.mark.parametrize(
+    ("champ", "valeur", "citee"), [("heures", "1,5", "1,5"), ("taux", float("nan"), "nan")],
+    ids=["heures-chaine", "taux-nan"],
+)
+def test_t_fac_20_script_refuse_une_seance_mal_formee(tmp_path, champ, valeur, citee):
+    """T-FAC-20 — séance 3 de la ligne 2 aux heures « 1,5 » (chaîne) ou au taux NaN : refus avant toute écriture,
+    code 1, message « [ERREUR] » qui nomme le champ, les rangs et la valeur, sans trace Python. Avant le correctif :
+    ValueError brute de `float()`, ou facture écrite puis déclarée non conforme (code 2)."""
+    spec = _spec_fac()
+    spec["lignes"][1]["seances"][2][champ] = valeur
+
+    message = _refus_du_script(tmp_path, spec)
+
+    assert champ in message and citee in message.lower(), message
+    assert re.search(r"\bligne (n° ?)?2\b", message, re.IGNORECASE), message
+    assert re.search(r"\bs[ée]ance (n° ?)?3\b", message, re.IGNORECASE), message
+
+
+def test_t_fac_21_script_refuse_un_taux_negatif(tmp_path):
+    """T-FAC-21 — taux négatif : refus avant toute écriture, code 1, message « [ERREUR] » qui nomme le taux et la
+    valeur. Avant le correctif, la facture s'écrivait (code 0)."""
+    spec = _spec_fac()
+    spec["lignes"][1]["seances"][2]["taux"] = -90
+
+    message = _refus_du_script(tmp_path, spec)
+
+    assert "taux" in message and "-90" in message, message
+
+
+def test_t_fac_22_script_refuse_masquer_jour_non_booleen(tmp_path):
+    """T-FAC-22 — `masquer_jour` à la chaîne « false » : refus avant toute écriture, code 1, message « [ERREUR] » qui
+    nomme la clé et la valeur. Avant le correctif, la chaîne valait vrai : facture écrite, colonne Jour masquée."""
+    message = _refus_du_script(tmp_path, _spec_fac(masquer_jour="false"))
+
+    assert "masquer_jour" in message and "false" in message, message
+
+
+def test_t_fac_23_script_accepte_une_spec_avec_bom(tmp_path):
+    """T-FAC-23 — une spec en UTF-8 avec BOM (Bloc-notes, PowerShell 5) donne exactement le même aperçu que sans BOM,
+    puis s'écrit : code 0, facture conforme. Avant le correctif : JSONDecodeError « Unexpected UTF-8 BOM »."""
+    racine = tmp_path / "donnees"
+    creer_master(racine)
+    sans_bom = _spec(tmp_path)
+    avec_bom = tmp_path / "spec_bom.json"
+    avec_bom.write_bytes(b"\xef\xbb\xbf" + sans_bom.read_bytes())
+
+    attendu = _lancer("scripts/nouvelle_facture.py", str(sans_bom), "--data-root", str(racine), "--dry-run")
+    apercu = _lancer("scripts/nouvelle_facture.py", str(avec_bom), "--data-root", str(racine), "--dry-run")
+    assert attendu.returncode == 0, attendu.stdout + attendu.stderr
+    assert apercu.returncode == 0, apercu.stdout + apercu.stderr
+    assert apercu.stdout == attendu.stdout
+
+    ecriture = _lancer("scripts/nouvelle_facture.py", str(avec_bom), "--data-root", str(racine))
+    assert ecriture.returncode == 0, ecriture.stdout + ecriture.stderr
+    assert "OK — facture R_ABC001 conforme" in ecriture.stdout, ecriture.stdout
+
+
+# Lance le script avec le classeur cible verrouillé, comme ouvert dans Excel ou LibreOffice : l'ouvrir pour
+# l'écrire, ou le remplacer par un fichier temporaire, lève PermissionError ; le lire reste possible.
+LANCEUR_CLASSEUR_OUVERT = '''\
+import os
+import runpy
+import sys
+from pathlib import Path
+
+import openpyxl
+
+verrouille = Path(sys.argv[1]).resolve()
+script = sys.argv[2]
+sys.argv = [script, *sys.argv[3:]]
+
+
+def _vise(chemin):
+    return isinstance(chemin, (str, os.PathLike)) and Path(chemin).resolve() == verrouille
+
+
+def _refuser(chemin):
+    raise PermissionError(13, "Permission denied", str(chemin))
+
+
+_vrai_save = openpyxl.Workbook.save
+
+
+def _save(self, filename):
+    if _vise(filename):
+        _refuser(filename)
+    return _vrai_save(self, filename)
+
+
+openpyxl.Workbook.save = _save
+
+
+def _deplacement_verrouille(vraie):
+    def deplacer(src, dst, *args, **kwargs):
+        if _vise(dst):
+            _refuser(dst)
+        return vraie(src, dst, *args, **kwargs)
+    return deplacer
+
+
+os.replace = _deplacement_verrouille(os.replace)
+os.rename = _deplacement_verrouille(os.rename)
+
+runpy.run_path(script, run_name="__main__")
+'''
+
+
+def test_t_fac_24_classeur_ouvert_a_l_enregistrement(tmp_path):
+    """T-FAC-24 — classeur de l'école ouvert dans Excel ou LibreOffice (PermissionError à l'enregistrement) : message
+    « [ERREUR] » qui nomme le classeur et dit de le fermer, sans trace Python, code 1, et aucun fichier partiel
+    laissé (le classeur garde ses octets et sa date, aucun fichier temporaire ne reste). Avant le correctif : trace
+    Python brute de la PermissionError."""
+    racine = tmp_path / "donnees"
+    creer_master(racine)
+    classeur = _classeur_existant(racine)
+    avant = _instantane(racine)
+    lanceur = tmp_path / "lanceur_classeur_ouvert.py"
+    lanceur.write_text(LANCEUR_CLASSEUR_OUVERT, encoding="utf-8")
+
+    res = _lancer(str(lanceur), str(classeur), "scripts/nouvelle_facture.py", str(SPEC_EXEMPLE),
+                  "--data-root", str(racine))
+
+    assert res.returncode == 1, res.stdout + res.stderr
+    assert "Traceback" not in res.stderr, res.stderr
+    message = _message_erreur(res)
+    assert classeur.name in message and re.search(r"ferme", message, re.IGNORECASE), res.stdout + res.stderr
+    assert _instantane(racine) == avant, "un fichier partiel ou temporaire est resté sous la racine"
+
+
+@pytest.mark.parametrize("options", [(), ("--dry-run",)], ids=["ecriture", "dry-run"])
+def test_t_fac_25_script_refuse_un_titre_d_onglet_trop_long(tmp_path, options):
+    """T-FAC-25 — titre d'onglet de 32 caractères : refus avant toute écriture, dès le `--dry-run`, code 1, message
+    « [ERREUR] » qui donne le titre et sa longueur. Avant le correctif : un avertissement d'openpyxl, et l'onglet
+    écrit (code 0)."""
+    assert len(TITRE_32) == 32
+    message = _refus_du_script(tmp_path, _spec_fac(onglet=TITRE_32), options)
+
+    assert TITRE_32 in message and re.search(r"(?<![\w.])32(?!\w)", message), message

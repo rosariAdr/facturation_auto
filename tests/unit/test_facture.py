@@ -1,6 +1,8 @@
-"""Facture dans le paquet (P-0a ; banque de tests : T-FAC-01, T-FAC-03 à T-FAC-17).
+"""Facture dans le paquet (P-0a ; banque de tests : T-FAC-01, T-FAC-03 à T-FAC-17) et contrôles de la facture
+laissés hors de P-0a (fix-facture ; T-FAC-18 à T-FAC-25).
 
-T-FAC-02 (aide du script, en sous-processus) est à la fin de `tests/integration/test_scripts.py`.
+T-FAC-02 (aide du script, en sous-processus) est à la fin de `tests/integration/test_scripts.py`, avec le côté
+script de T-FAC-18 à T-FAC-25.
 
 `facturation/facture.py` reprend les fonctions de `scripts/nouvelle_facture.py` sans changer leur
 comportement, et en ajoute deux : `ecrire_onglet` (la séquence d'écriture de `generer`, sans rien
@@ -852,3 +854,286 @@ def test_t_fac_17_erreur_en_cours_d_ecriture_classeur_intact(
         facture.ecrire_onglet(wb, spec, dest, entite=ENTITE)
 
     assert _etat(wb) == avant, "ecrire_onglet a laissé un onglet à moitié écrit dans le classeur"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# fix-facture — contrôles de la facture laissés hors de P-0a (T-FAC-18 à T-FAC-25)
+# ──────────────────────────────────────────────────────────────────────
+#
+# La revue de P-0a a relevé des défauts antérieurs que son contrat (comportement gelé) interdisait de
+# corriger : aperçu arrondi sur le float binaire, ligne sans séance écrite (ou déclarée non conforme par un
+# faux écart), séances mal formées converties en silence, spec avec BOM refusée, titre d'onglet trop long
+# écrit quand même. Tests d'acceptation du correctif (contrats §18), rouges avant lui (TDD strict, bug fix).
+#
+# Les refus de structure vivent dans `charger_spec` (ValueError) ou dans `controler_spec` (EcritureRefusee) :
+# les tests passent donc la spec par le chemin du script (JSON lu par `charger_spec`, puis `generer`) et
+# admettent l'un ou l'autre type. Le message nomme la cause, le rang de la ligne (« ligne 2 », compté à partir
+# de 1) et, pour une séance, son rang dans sa ligne (« séance 3 ») et la valeur fautive. Le côté script (code 1,
+# « [ERREUR] », sans trace Python) est à la fin de `tests/integration/test_scripts.py`.
+
+DEST_FICTIF = {"nom": "ÉCOLE FICTIVE A", "adresse_l1": "10 avenue Test", "adresse_l2": "00000 TESTVILLE"}
+EMETTEUR_FICTIF = {
+    "nom": "FORMATEUR FICTIF ROSARI EI", "adresse_l1": "1 rue de l'Exemple,", "adresse_l2": "00000 Villefictive",
+}
+
+
+def _apercu_des_groupes(facture, spec: dict) -> str:
+    """Aperçu de la spec, groupes construits comme dans `generer` (heures et taux en float)."""
+    return facture.apercu(
+        spec, facture.construire_groupes(spec["lignes"]), DEST_FICTIF, emetteur=EMETTEUR_FICTIF, nda="NDA fictif",
+    )
+
+
+def _apercu_d_une_ligne(facture, seances: list[tuple]) -> str:
+    """Aperçu d'une facture d'une ligne, avec une séance par couple (heures, taux)."""
+    lignes = [{"promotion": "M1 S1", "libelle": "Module A",
+               "seances": [_seance(f"2026-09-{1 + i:02d}", h, t) for i, (h, t) in enumerate(seances)]}]
+    return _apercu_des_groupes(facture, _spec(lignes=lignes))
+
+
+def _montants_affiches(texte: str) -> list[str]:
+    """Dernière colonne de chaque ligne de séance de l'aperçu, telle qu'affichée (« |     50.00 € »)."""
+    return [ligne[ligne.rindex("|"):] for ligne in texte.splitlines() if ligne.startswith("  | ")]
+
+
+def _colonne_montant(montant: str) -> str:
+    """Colonne montant au format d'affichage inchangé : 9 caractères alignés à droite, puis « € »."""
+    return f"| {montant:>9} €"
+
+
+def test_t_fac_18a_apercu_arrondi_au_centime_sur_la_valeur_decimale():
+    """T-FAC-18 — l'aperçu calcule en décimal à partir de la valeur écrite (jamais du float binaire) et arrondit au
+    centime, la moitié vers le haut : 1,5 h × 33,33 € = 49,995 € s'affiche 50.00 € sur la ligne et au TOTAL HT, au
+    format inchangé. Avant le correctif, le float binaire (49,99499…) donnait 49.99 €."""
+    facture = _module()
+    texte = _apercu_d_une_ligne(facture, [(1.5, 33.33)])
+    assert _montants_affiches(texte) == [_colonne_montant("50.00")], texte
+    assert "TOTAL HT     : 50.00 €" in texte.splitlines(), texte
+
+
+def test_t_fac_18b_total_ht_arrondi_une_seule_fois():
+    """T-FAC-18 — TOTAL HT = arrondi(Σ heures × taux), une seule fois, comme le `=SUM` du gabarit qui additionne des
+    produits non arrondis : trois séances de 1 h à 0,005 € donnent 0.01 € par ligne et 0.02 € au total (ni 0.03,
+    somme des lignes arrondies, ni 0.01, arrondi du float binaire avant le correctif). Garde : les montants de la
+    spec complète ne bougent pas (270.00, 270.00 et 90.75 ; total 630.75)."""
+    facture = _module()
+    complete = _apercu_des_groupes(facture, _spec())
+    assert _montants_affiches(complete) == [_colonne_montant(m) for m in ("270.00", "270.00", "90.75")], complete
+    assert "TOTAL HT     : 630.75 €" in complete.splitlines(), complete
+
+    texte = _apercu_d_une_ligne(facture, [(1, 0.005)] * 3)
+    assert _montants_affiches(texte) == [_colonne_montant("0.01")] * 3, texte
+    assert "TOTAL HT     : 0.02 €" in texte.splitlines(), texte
+
+
+# Deux lignes, la seconde à trois séances : une séance fautive y est la « séance 3 » de la « ligne 2 » (rangs
+# comptés à partir de 1 ; à partir de 0, le message dirait « ligne 1 » et « séance 2 »).
+SPEC_SEANCES = {
+    **SPEC_MINIMALE,
+    "onglet": "R_ABC001 Sept 2026",
+    "n_facture": "R_ABC001",
+    "date_emission": "2026-09-30",
+    "lignes": [
+        {"promotion": "M1 S1", "libelle": "[2026][M1 S1][Module A][3H]", "seances": [_seance("2026-09-15", 3, 90)]},
+        {"promotion": "M2 S1", "libelle": "[2026][M2 S1][Module B][6H]",
+         "seances": [_seance("2026-09-16", 2, 60), _seance("2026-09-17", 2, 60), _seance("2026-09-18", 2, 60)]},
+    ],
+}
+
+# Classeur de l'école fictive ABC sous la racine de données, celui de toutes les specs fictives de ce fichier.
+CLASSEUR_ABC = Path("ROSARI", "ABC", "ROSARI_ABC.xlsx")
+
+
+def _spec_seances(numero: int = 1) -> dict:
+    """Copie indépendante de SPEC_SEANCES, sous le numéro R_ABC<numero> (onglet « R_ABC<numero> Sept 2026 »)."""
+    spec = copy.deepcopy(SPEC_SEANCES)
+    spec["n_facture"] = f"R_ABC{numero:03d}"
+    spec["onglet"] = f"R_ABC{numero:03d} Sept 2026"
+    return spec
+
+
+def _classeur_existant(racine: Path) -> Path:
+    """Classeur de l'école ABC qui porte déjà une facture (« R_ABC000 Août 2026 », N° R_ABC000 en D17), créé s'il
+    n'existe pas, daté du 01/01/2020 : une réécriture à l'identique (mêmes octets) se voit aussi."""
+    classeur = racine / CLASSEUR_ABC
+    if not classeur.exists():
+        classeur.parent.mkdir(parents=True, exist_ok=True)
+        _classeur_avec_une_facture().save(classeur)
+    os.utime(classeur, ns=(1_577_836_800 * 10**9, 1_577_836_800 * 10**9))
+    return classeur
+
+
+def _refus_avant_ecriture(facture, spec: dict, racine: Path, dossier: Path) -> str:
+    """Passe la spec par le chemin du script — JSON écrit dans `dossier`, lu par `charger_spec`, puis donné à
+    `generer` — et attend un refus avant toute écriture : `ValueError` (refus de `charger_spec`) ou `EcritureRefusee`
+    (refus de `controler_spec`). Le classeur de l'école, qui porte déjà une facture, garde ses octets et sa date
+    (aucun onglet ajouté), et aucun fichier n'apparaît sous la racine. Rend le message du refus."""
+    _classeur_existant(racine)
+    avant = _instantane(racine)
+    chemin = dossier / "spec_refusee.json"
+    chemin.write_text(json.dumps(spec, ensure_ascii=False), encoding="utf-8")
+    with pytest.raises((ValueError, facture.EcritureRefusee)) as erreur:
+        facture.generer(facture.charger_spec(chemin))
+    assert _instantane(racine) == avant, "la spec refusée a modifié la racine de données (onglet ou fichier écrit)"
+    return str(erreur.value)
+
+
+def _verifier_rang(message: str, *, ligne: int, seance: int | None = None) -> None:
+    """Le message nomme le rang de la ligne (« ligne 2 ») et, s'il y a lieu, celui de la séance dans sa ligne
+    (« séance 3 »), comptés à partir de 1 ; « n° » est admis devant le nombre."""
+    assert re.search(rf"\bligne (n° ?)?{ligne}\b", message, re.IGNORECASE), f"« ligne {ligne} » absent : {message!r}"
+    if seance is not None:
+        assert re.search(rf"\bs[ée]ance (n° ?)?{seance}\b", message, re.IGNORECASE), (
+            f"« séance {seance} » absent : {message!r}"
+        )
+
+
+def _formes_de(valeur) -> set[str]:
+    """Écritures admises de la valeur fautive dans un message : Python (repr, str), JSON, et virgule décimale."""
+    formes = {repr(valeur), str(valeur), json.dumps(valeur, ensure_ascii=False)}
+    if isinstance(valeur, float):
+        formes.add(str(valeur).replace(".", ","))
+    return formes
+
+
+def _verifier_valeur(message: str, valeur) -> None:
+    """Le message cite la valeur fautive, comme un mot entier (« 0 » ne se trouve pas dans « R_ABC001 »)."""
+    cites = [f for f in _formes_de(valeur) if re.search(rf"(?<![\w.]){re.escape(f)}(?!\w)", message, re.IGNORECASE)]
+    assert cites, f"valeur fautive {valeur!r} absente du message : {message!r}"
+
+
+def _vider_les_seances(ligne: dict) -> None:
+    ligne["seances"] = []
+
+
+def _oter_les_seances(ligne: dict) -> None:
+    del ligne["seances"]
+
+
+@pytest.mark.parametrize("rang", [1, 2], ids=["premiere-ligne", "derniere-ligne"])
+@pytest.mark.parametrize("retirer", [_vider_les_seances, _oter_les_seances], ids=["seances-vide", "seances-absente"])
+def test_t_fac_19_ligne_sans_seance_refusee(racine_fictive, tmp_path, retirer, rang):
+    """T-FAC-19 — une ligne dont `seances` est vide ou absente est refusée avant toute écriture, par un message qui
+    nomme son rang et son libellé : aucun onglet ajouté au classeur de l'école, aucun fichier écrit. Avant le
+    correctif, `seances` vide était écrite (la ligne disparaissait de la facture) et, en première ligne, déclarée
+    non conforme par un faux écart sur le premier libellé ; `seances` absente levait une KeyError brute."""
+    facture = _module()
+    spec = _spec_seances()
+    ligne = spec["lignes"][rang - 1]
+    retirer(ligne)
+
+    message = _refus_avant_ecriture(facture, spec, racine_fictive, tmp_path)
+
+    _verifier_rang(message, ligne=rang)
+    assert ligne["libelle"] in message, message
+
+
+# (champ de la séance, valeur fautive) : rien de tout cela n'est un nombre fini.
+CAS_HEURES_OU_TAUX_NON_NUMERIQUES = {
+    "heures-chaine-virgule": ("heures", "1,5"),
+    "heures-chaine-chiffres": ("heures", "18"),  # jamais de conversion silencieuse d'une chaîne en nombre
+    "heures-booleen": ("heures", True),
+    "heures-null": ("heures", None),
+    "heures-nan": ("heures", float("nan")),
+    "heures-infinies": ("heures", float("inf")),
+    "taux-chaine-chiffres": ("taux", "90"),
+    "taux-booleen": ("taux", False),
+    "taux-null": ("taux", None),
+    "taux-nan": ("taux", float("nan")),
+    "taux-moins-infini": ("taux", float("-inf")),
+}
+
+
+@pytest.mark.parametrize(
+    ("champ", "valeur"), list(CAS_HEURES_OU_TAUX_NON_NUMERIQUES.values()), ids=list(CAS_HEURES_OU_TAUX_NON_NUMERIQUES),
+)
+def test_t_fac_20_heures_ou_taux_qui_ne_sont_pas_des_nombres_refuses(racine_fictive, tmp_path, champ, valeur):
+    """T-FAC-20 — heures ou taux qui ne sont pas des nombres finis (chaîne, même « 18 », booléen, null, NaN, infini)
+    sont refusés avant toute écriture, sans jamais convertir une chaîne en nombre. Le message nomme le champ, le rang
+    de la ligne, celui de la séance dans sa ligne et la valeur fautive. Avant le correctif : « 18 » et les booléens
+    étaient convertis en silence, « 1,5 » levait la ValueError de `float()` sans rang, null une TypeError, et NaN ou
+    l'infini étaient écrits puis déclarés non conformes."""
+    facture = _module()
+    spec = _spec_seances()
+    spec["lignes"][1]["seances"][2][champ] = valeur
+
+    message = _refus_avant_ecriture(facture, spec, racine_fictive, tmp_path)
+
+    assert champ in message, message
+    _verifier_rang(message, ligne=2, seance=3)
+    _verifier_valeur(message, valeur)
+
+
+@pytest.mark.parametrize(
+    ("champ", "refusee", "admise"),
+    [("heures", 0, 0.25), ("heures", -1.5, 0.25), ("taux", -0.01, 0)],
+    ids=["heures-nulles", "heures-negatives", "taux-negatif"],
+)
+def test_t_fac_21_heures_nulles_ou_negatives_et_taux_negatif_refuses(racine_fictive, tmp_path, champ, refusee, admise):
+    """T-FAC-21 — heures ≤ 0 ou taux < 0 : refus avant toute écriture, par un message qui nomme le champ, le rang de
+    la ligne, celui de la séance et la valeur. Garde : la borne admise s'écrit et reste conforme (heures de 0,25 ; un
+    taux à 0, accepté avant le correctif, le reste : ne rien inventer). Avant le correctif, les trois s'écrivaient."""
+    facture = _module()
+    _classeur_existant(racine_fictive)
+    garde = _spec_seances(1)
+    garde["lignes"][1]["seances"][2][champ] = admise
+    facture.generer(garde)  # lève PostMortemEnEcart si la facture écrite n'est pas conforme
+    assert garde["onglet"] in load_workbook(racine_fictive / CLASSEUR_ABC).sheetnames
+
+    spec = _spec_seances(2)
+    spec["lignes"][1]["seances"][2][champ] = refusee
+    message = _refus_avant_ecriture(facture, spec, racine_fictive, tmp_path)
+
+    assert champ in message, message
+    _verifier_rang(message, ligne=2, seance=3)
+    _verifier_valeur(message, refusee)
+
+
+@pytest.mark.parametrize("valeur", ["false", "oui", 1], ids=["chaine-false", "chaine-oui", "entier-1"])
+def test_t_fac_22_masquer_jour_non_booleen_refuse(racine_fictive, tmp_path, valeur):
+    """T-FAC-22 — `masquer_jour` qui n'est pas un booléen (true ou false) est refusé avant toute écriture, par un
+    message qui nomme la clé et la valeur. Avant le correctif, `bool()` le convertissait en silence : la chaîne
+    « false » masquait la colonne Jour."""
+    facture = _module()
+    spec = _spec_seances() | {"masquer_jour": valeur}
+
+    message = _refus_avant_ecriture(facture, spec, racine_fictive, tmp_path)
+
+    assert "masquer_jour" in message, message
+    _verifier_valeur(message, valeur)
+
+
+def test_t_fac_23_spec_en_utf8_avec_bom_acceptee(tmp_path):
+    """T-FAC-23 — une spec JSON en UTF-8 avec BOM (Bloc-notes, PowerShell 5), fins de ligne Windows comprises, est lue
+    par `charger_spec` comme la même spec sans BOM. Avant le correctif : JSONDecodeError « Unexpected UTF-8 BOM »."""
+    facture = _module()
+    texte = json.dumps(SPEC_COMPLETE, ensure_ascii=False, indent=2)
+    sans_bom = tmp_path / "sans_bom.json"
+    sans_bom.write_bytes(texte.encode("utf-8"))
+    avec_bom = tmp_path / "avec_bom.json"
+    avec_bom.write_bytes(b"\xef\xbb\xbf" + texte.replace("\n", "\r\n").encode("utf-8"))
+
+    assert facture.charger_spec(sans_bom) == SPEC_COMPLETE
+    assert facture.charger_spec(avec_bom) == SPEC_COMPLETE
+
+
+# 31 caractères, mais 33 octets en UTF-8 (« û » et « É ») : la limite d'Excel compte des caractères. Puis 32.
+TITRE_31 = "R_ABC001 Août 2026 École fictiv"
+TITRE_32 = "R_ABC002 Août 2026 École fictive"
+
+
+def test_t_fac_25_titre_d_onglet_de_plus_de_31_caracteres_refuse(racine_fictive, tmp_path):
+    """T-FAC-25 — un titre d'onglet de plus de 31 caractères (limite d'Excel) est refusé avant toute écriture, par un
+    message qui donne le titre et sa longueur. Garde : 31 caractères, accents compris, s'écrivent et restent
+    conformes. Avant le correctif, openpyxl n'émettait qu'un avertissement et l'onglet de 32 caractères était écrit."""
+    facture = _module()
+    assert (len(TITRE_31), len(TITRE_32)) == (31, 32)
+    _classeur_existant(racine_fictive)
+    garde = _spec_seances(1) | {"onglet": TITRE_31}
+    facture.generer(garde)  # lève PostMortemEnEcart si la facture écrite n'est pas conforme
+    assert TITRE_31 in load_workbook(racine_fictive / CLASSEUR_ABC).sheetnames
+
+    message = _refus_avant_ecriture(facture, _spec_seances(2) | {"onglet": TITRE_32}, racine_fictive, tmp_path)
+
+    assert TITRE_32 in message, message
+    assert re.search(r"(?<![\w.])32(?!\w)", message), f"longueur 32 absente du message : {message!r}"
