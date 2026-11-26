@@ -19,11 +19,15 @@ Lectures retenues (`💡 [proposé — à valider]`) :
 - avec un filtre (`--ecole`, `--mois`, `--echues`), seules les anomalies des factures affichées
   comptent, plus, sans `--mois` ni `--echues`, les N° de `Sessions` absents du registre (de
   l'école filtrée) ; les lignes illisibles de `Sessions` ne comptent que sans filtre ;
-- `--trous` n'affiche que les numéros manquants sans raison notée, et rend 3 s'il y en a (une
-  raison est à noter, ADR029), 0 sinon ;
+- `--ecole` désigne une école par son code ou son libellé ; une école inconnue de `Écoles`, de
+  `Règles_facturation`, du registre et de `Sessions` (faute de frappe) rend 1 ;
+- `--trous` n'affiche que les numéros manquants sans raison notée (de l'école de `--ecole`
+  seulement, s'il est donné), et rend 3 s'il y en a (une raison est à noter, ADR029), 0 sinon ;
 - un MASTER ouvert est refusé avant la question ; une réponse autre que « oui » (ou la fin de
-  l'entrée) n'écrit rien et rend 1 ; une écriture que le contrôle après écriture trouve non
-  conforme rend 2.
+  l'entrée) n'écrit rien et rend 1 ; ce qui est écrit est ce qui a été montré (§ 1.3) : un MASTER
+  modifié pendant la question refuse l'écriture (code 1) ;
+- une écriture que le contrôle après écriture trouve non conforme, qui ne peut pas être relue, ou
+  dont le journal ne s'écrit pas rend 2 : le MASTER est écrit, le message cite la sauvegarde.
 """
 
 from __future__ import annotations
@@ -144,7 +148,9 @@ def _valeur(valeur: Any) -> str:
 
 
 def _cle(numero: Any) -> str:
-    return "".join(str(numero or "").split()).upper()
+    from facturation.registre import cle_numero
+
+    return cle_numero(numero)
 
 
 def _sans_accents(texte: str) -> str:
@@ -215,34 +221,39 @@ def _onglet_factures_present(chemin: Path) -> bool:
 # ──────────────────────────────────────────────────────────────────────
 
 
-def _codes_ecoles(m, code_ecole) -> list[str]:
-    """Écoles de `Règles_facturation` et de `Écoles`, en code ; une valeur illisible est ignorée."""
-    valeurs = [ligne.get("École") for ligne in m.regles_facturation]
-    valeurs += [ligne.get("Code facturation") or ligne.get("École") for ligne in m.ecoles]
-    codes: list[str] = []
-    for valeur in valeurs:
-        try:
-            code = code_ecole(valeur, m.ecoles)
-        except ValueError:
-            continue
-        if code and code not in codes:
-            codes.append(code)
-    return codes
+def _code_filtre(valeur: str, m, lignes, seances) -> str:
+    """Code de l'école désignée par `--ecole` (code ou libellé).
+
+    Raises:
+        ValueError: école inconnue de `Écoles`, de `Règles_facturation`, du registre et de
+            `Sessions` ; le message cite la valeur et l'onglet `Écoles`.
+    """
+    from facturation import registre, sessions
+
+    try:
+        code = sessions.code_ecole(valeur, m.ecoles) or ""
+    except ValueError:
+        code = ""
+    code = code or " ".join(valeur.split()).upper()
+    connues = registre.codes_ecoles(m)
+    connues += [e for e in dict.fromkeys(x.ecole.upper() for x in (*lignes, *seances) if x.ecole) if e not in connues]
+    if code not in connues:
+        raise ValueError(
+            f"école « {valeur.strip()} » inconnue : ni code ni libellé de l'onglet « Écoles » (ni de "
+            f"« Règles_facturation », du registre ou de Sessions). Écoles connues : {', '.join(connues) or 'aucune'}."
+        )
+    return code
 
 
-def _trous(profil, m, lignes) -> int:
+def _trous(profil, m, lignes, code_filtre: str | None) -> int:
     from facturation import numerotation, registre
-    from facturation.sessions import code_ecole
 
-    codes = []
-    for code in _codes_ecoles(m, code_ecole):
-        try:
-            codes.append(numerotation.valider_code_ecole(code))
-        except ValueError:
-            continue
+    codes = [code_filtre] if code_filtre is not None else registre.codes_ecoles(m)
     trous = registre.trous_sans_raison(
         lignes, numerotation.lire_numeros(profil.master), prefixe=profil.prefixe_facture, ecoles=codes,
     )
+    if code_filtre is not None:
+        print(f"Filtre : école {code_filtre}")
     print(f"NUMÉROS MANQUANTS SANS RAISON NOTÉE : {len(trous)}")
     for numero in trous:
         print(f"  {numero} — notez sa raison : facturation registre manquant {numero} --raison \"…\"")
@@ -272,16 +283,10 @@ def _tableau(args: argparse.Namespace) -> int:
         lignes = registre.lire_registre(m)
         seances, illisibles = sessions.lire_sessions(m)
         aujourd_hui = date.today()
+        code_filtre = None if args.ecole is None else _code_filtre(args.ecole, m, lignes, seances)
         print(f"Registre des factures — entité {profil.entite} — aujourd'hui {aujourd_hui:%d/%m/%Y}")
         if args.trous:
-            return _trous(profil, m, lignes)
-        code_filtre = None
-        if args.ecole is not None:
-            try:
-                code_filtre = sessions.code_ecole(args.ecole, m.ecoles)
-            except ValueError:
-                code_filtre = None
-            code_filtre = code_filtre or args.ecole.strip().upper()
+            return _trous(profil, m, lignes, code_filtre)
     except _erreurs_attendues() as exc:
         _erreur(exc)
         return 1
@@ -418,7 +423,7 @@ def _mettre_a_jour(args: argparse.Namespace, **champs: Any) -> int:
     if not _valider(args):
         return 1
     return _ecrire(lambda: registre.mettre_a_jour_registre(
-        profil, args.numero, remplacer=args.remplacer, confirme=True, **champs))
+        profil, args.numero, remplacer=args.remplacer, confirme=True, apercu_valide=changements, **champs))
 
 
 def _envoyee(args: argparse.Namespace) -> int:
@@ -449,7 +454,8 @@ def _manquant(args: argparse.Namespace) -> int:
           f"« {registre.ABANDONNEE} » — note : {ligne[registre.COL_NOTE]}")
     if not _valider(args):
         return 1
-    return _ecrire(lambda: registre.noter_manquant(profil, args.numero, raison=args.raison, confirme=True))
+    return _ecrire(lambda: registre.noter_manquant(
+        profil, args.numero, raison=args.raison, confirme=True, apercu_valide=ligne))
 
 
 def _ligne_reprise(ligne: Mapping[str, Any]) -> str:
@@ -485,4 +491,4 @@ def _initialiser(args: argparse.Namespace) -> int:
     if not _valider(args):
         return 1
     return _ecrire(lambda: registre.initialiser_registre(
-        profil, reprendre_historique=args.reprendre_historique, confirme=True))
+        profil, reprendre_historique=args.reprendre_historique, confirme=True, apercu_valide=(cree, reprises)))

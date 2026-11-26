@@ -33,28 +33,47 @@ Lectures retenues (`💡 [proposé — à valider]`) :
   porte l'arrondi de ses propres heures × taux, l'arrondi de la somme exacte des heures × taux
   (c'est le total de la facture, qui arrondit une seule fois) ; une facture non abandonnée sans
   aucune ligne dans `Sessions` est une anomalie ; une ligne abandonnée n'est pas contrôlée ;
+- une ligne `Sessions` du N° sans Total HT est une anomalie qui nomme la ligne : le total ne peut
+  pas être rapproché ;
 - « statut incohérent avec les dates » : « payée » sans date de paiement, « envoyée » sans date
-  d'envoi ; une date saisie dans Excel sans changer le statut n'est pas une anomalie (le statut
-  affiché suit les dates) ;
+  d'envoi, « en émission » ou « abandonnée » avec une date d'envoi ou de paiement ; une date
+  saisie dans Excel sans changer le statut « émise » n'est pas une anomalie (le statut affiché
+  suit les dates) ;
+- deux N° qui ne diffèrent que par la casse, des espaces, un caractère invisible (U+200B…) ou le
+  tiret bas avant le rang (« R_ABC_001 », que `numerotation` compte au rang de « R_ABC001 »)
+  désignent la même facture ;
 - `modifier_ligne` : une date se compare à celle déjà saisie (même date = rien ne change, sans
   refus) ; une date ou une note déjà saisie d'une autre valeur ne se remplace qu'avec
   `remplacer=True`, une cellule illisible aussi ; une formule n'est jamais écrasée, même avec
   `remplacer=True` ; envoi et paiement sont refusés sur une facture « en émission » (son contrôle
-  n'est pas encore vert) ; `statut="émise"` vient de « en émission » (ou d'un statut vide),
-  `statut="abandonnée"` de « en émission », « émise » ou d'un statut vide, et `statut` ne se
+  n'est pas encore vert) ; une date d'envoi notée sur une facture déjà payée (date de paiement
+  saisie) ne fait pas reculer le statut à « envoyée » ; `statut="émise"` vient de « en émission »
+  (ou d'un statut vide) ; `statut="abandonnée"` vient de « en émission » seulement, sans date
+  d'envoi ni de paiement (§ 8.7 : une facture émise se corrige par un avoir) ; `statut` ne se
   combine pas avec une date ;
-- `ajouter_ligne` refuse un texte qui commence par « = » (ce serait une formule) ;
-- `noter_manquant` déduit l'école du N° et du préfixe du profil (« R_ABC002 » → ABC) et refuse un
-  N° présent dans `Sessions` (ce n'est pas un numéro manquant) ;
+- `ajouter_ligne` refuse un texte qui commence par « = » (ce serait une formule) ou qui porte un
+  caractère de contrôle qu'un classeur ne peut pas enregistrer, et un total qui n'est pas un
+  montant (NaN, infini) ;
+- `noter_manquant` déduit l'école du N° et du préfixe du profil (« R_ABC002 » → ABC), parmi les
+  écoles de `Écoles` et de `Règles_facturation` ; il ne note qu'un numéro qui manque à la série
+  (ADR029) : un trou, ou le numéro qui suit le plus grand ; il refuse un N° présent dans
+  `Sessions` (ce n'est pas un numéro manquant) ;
 - `lignes_historiques` écrit le N° en majuscules ; un N° dont les lignes `Sessions` portent deux
   écoles est refusé ; un total vide dans l'une de ses lignes laisse le total vide (jamais
   inventé) ; une ligne illisible de `Sessions` arrête la reprise ;
 - avant d'écrire, `master.fidelite_aller_retour` est consulté (§ 15 : « garder le contrôle de
-  fidélité à l'écriture ») : une perte autre que la valeur en cache des formules refuse
-  l'écriture ;
+  fidélité à l'écriture ») : toute perte refuse l'écriture, y compris la valeur en cache des
+  formules d'un onglet lu par l'outil (l'outil lit le MASTER en valeurs : un N° ou une échéance
+  en formule se liraient vides, et un numéro serait réutilisé) ;
+- ce qui est écrit est ce qui a été validé (§ 1.3) : avec `apercu_valide`, une écriture dont
+  l'aperçu a changé depuis (MASTER modifié dans Excel pendant la question) est refusée sans rien
+  écrire ;
 - un événement `registre` par facture écrite ; la création de l'onglet a son propre événement,
   au N° nul ; rien à écrire (même date redonnée, rien à reprendre) lève `RegistreInvalide` sans
-  rien écrire.
+  rien écrire ;
+- après l'enregistrement, un journal qui ne s'écrit pas ou une relecture impossible lèvent
+  `EcritureNonConforme` (la commande rend 2) : le message dit que le MASTER est écrit et cite la
+  sauvegarde.
 """
 
 from __future__ import annotations
@@ -71,6 +90,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from openpyxl import load_workbook
+from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 from openpyxl.utils.exceptions import InvalidFileException
 from openpyxl.worksheet.formula import ArrayFormula, DataTableFormula
 
@@ -87,7 +107,7 @@ from facturation.master import (
     lire_master,
     poste_courant,
 )
-from facturation.numerotation import numeros_manquants, valider_code_ecole
+from facturation.numerotation import lire_numeros, numeros_manquants, prochain_numero, valider_code_ecole
 from facturation.sessions import LigneSessions, code_ecole, lire_sessions
 
 if TYPE_CHECKING:
@@ -126,8 +146,9 @@ _MONTANT_RE = re.compile(rf"[+-]?(?:\d{{1,3}}(?:[{_ESPACES_MILLIERS}]\d{{3}})+|\
 # Erreurs d'un classeur abîmé à l'ouverture (openpyxl, zipfile) ; PermissionError est traitée à part.
 _ERREURS_OUVERTURE = (KeyError, SyntaxError, ValueError, TypeError, IndexError, EOFError, OSError,
                       zipfile.BadZipFile, InvalidFileException)
-# Seule perte d'un aller-retour openpyxl tolérée à l'écriture : la valeur en cache des formules.
-_PERTE_TOLEREE = "cellule(s) à formule"
+# Tiret bas facultatif avant le rang (« R_ABC_001 », variante historique que `numerotation` compte
+# au même rang que « R_ABC001 ») : retiré de la forme de comparaison d'un N°.
+_TIRET_AVANT_RANG = re.compile(r"(?<=[A-Z0-9])_(?=\d{3}$)")
 
 
 class RegistreInvalide(ValueError):
@@ -135,7 +156,9 @@ class RegistreInvalide(ValueError):
 
 
 class EcritureNonConforme(RuntimeError):
-    """Le contrôle après écriture a trouvé dans le MASTER autre chose que les cellules annoncées."""
+    """Après l'enregistrement du MASTER, le contrôle a trouvé autre chose que les cellules annoncées,
+    n'a pas pu relire le classeur, ou le journal des écritures n'a pas pu être écrit : le MASTER est
+    écrit, et le message cite la sauvegarde d'avant l'écriture."""
 
 
 @dataclass(frozen=True)
@@ -178,9 +201,15 @@ def _texte(valeur: Any) -> str:
     return unicodedata.normalize("NFC", str(valeur)).strip()
 
 
-def _cle(numero: Any) -> str:
-    """Forme de comparaison d'un N° : sans espaces, en majuscules (« r_abc001 » → « R_ABC001 »)."""
-    return "".join(_texte(numero).split()).upper()
+def cle_numero(numero: Any) -> str:
+    """Forme de comparaison d'un N° : en majuscules, sans espaces ni caractères invisibles (U+200B,
+    U+FEFF…), sans le tiret bas facultatif avant le rang (« r_abc_001 » → « R_ABC001 ») ; "" pour
+    une cellule vide. Deux N° de même forme désignent la même facture."""
+    texte = "".join(c for c in _texte(numero) if not c.isspace() and unicodedata.category(c) != "Cf")
+    return _TIRET_AVANT_RANG.sub("", texte.upper())
+
+
+_cle = cle_numero
 
 
 def _sans_accents(texte: str) -> str:
@@ -410,11 +439,37 @@ def _total_coherent(total: Decimal, seances: Sequence[LigneSessions]) -> bool:
     return attendu == heures.arrondi_centime(sum(exacts, Decimal(0)))
 
 
+def _dates_saisies(ligne: LigneRegistre) -> str:
+    """« une date d'envoi (02/12/2026) est saisie », « une date d'envoi (…) et une date de paiement
+    (…) sont saisies » ; "" sans date d'envoi ni de paiement."""
+    datees = [
+        f"une {libelle} ({_jj(valeur)})"
+        for valeur, libelle in ((ligne.date_envoi, "date d'envoi"), (ligne.date_paiement, "date de paiement"))
+        if valeur is not None
+    ]
+    if not datees:
+        return ""
+    return f"{' et '.join(datees)} {'sont saisies' if len(datees) > 1 else 'est saisie'}"
+
+
 def _anomalies_de_la_ligne(ligne: LigneRegistre, seances: Sequence[LigneSessions]) -> list[str]:
-    if ligne.statut_saisi == ABANDONNEE:
-        return []
     n = ligne.n_facture
+    if ligne.statut_saisi == ABANDONNEE:
+        datees = _dates_saisies(ligne)
+        if datees:
+            return [
+                f"{n} : statut « {ABANDONNEE} » alors qu'{datees} : une facture envoyée ou payée ne s'abandonne pas "
+                f"(elle se corrige par un avoir) ; corrigez la colonne « {COL_STATUT} » ou les dates."
+            ]
+        return []
     trouvees: list[str] = []
+    if ligne.statut_saisi == EN_EMISSION:
+        datees = _dates_saisies(ligne)
+        if datees:
+            trouvees.append(
+                f"{n} : statut « {EN_EMISSION} » (contrôle après écriture pas encore vert) alors qu'{datees} : "
+                f"terminez l'émission, ou corrigez la colonne « {COL_STATUT} »."
+            )
     emission = ligne.date_emission
     if emission is not None:
         for valeur, libelle in ((ligne.date_envoi, "date d'envoi"), (ligne.date_paiement, "date de paiement"),
@@ -430,10 +485,18 @@ def _anomalies_de_la_ligne(ligne: LigneRegistre, seances: Sequence[LigneSessions
         trouvees.append(f"{n} : statut « {PAYEE} » sans date de paiement (colonne « {COL_PAIEMENT} »).")
     if ligne.statut_saisi == ENVOYEE and ligne.date_envoi is None:
         trouvees.append(f"{n} : statut « {ENVOYEE} » sans date d'envoi (colonne « {COL_ENVOI} »).")
+    sans_total = [s.rang for s in seances if s.total_ht is None]
     if not seances:
         trouvees.append(
             f"{n} : aucune ligne dans l'onglet « Sessions » pour ce N° : le Total HT ne peut pas être "
             "rapproché des séances facturées (ADR003)."
+        )
+    elif sans_total:
+        pluriel = "s" if len(sans_total) > 1 else ""
+        trouvees.append(
+            f"{n} : Total HT vide dans l'onglet « Sessions », ligne{pluriel} {', '.join(map(str, sans_total))} : le "
+            "Total HT du registre ne peut pas être rapproché des séances facturées ; complétez la colonne "
+            "« Total HT » de Sessions."
         )
     elif ligne.total_ht is None:
         somme = sum((s.total_ht for s in seances if s.total_ht is not None), Decimal(0))
@@ -455,10 +518,13 @@ def anomalies(lignes: Sequence[LigneRegistre], sessions: Sequence[LigneSessions]
     - envoi, paiement ou échéance antérieurs à l'émission ;
     - paiement sans envoi (avertissement) ;
     - `Total HT` différent de celui des lignes `Sessions` du N° (au centime, voir
-      `_total_coherent`), ou facture sans ligne `Sessions` ;
-    - statut saisi incohérent avec les dates (« payée » sans paiement, « envoyée » sans envoi).
+      `_total_coherent`), facture sans ligne `Sessions`, ou ligne `Sessions` du N° sans Total HT
+      (le message nomme la ligne) ;
+    - statut saisi incohérent avec les dates (« payée » sans paiement, « envoyée » sans envoi,
+      « en émission » ou « abandonnée » avec un envoi ou un paiement).
 
-    Une ligne abandonnée n'est pas contrôlée. Ordre : celui du registre, puis les N° absents.
+    D'une ligne abandonnée, seules les dates d'envoi et de paiement sont contrôlées. Ordre : celui
+    du registre, puis les N° absents.
     """
     par_numero: dict[str, list[LigneSessions]] = {}
     for seance in sessions:
@@ -514,13 +580,23 @@ def _date_donnee(valeur: Any, nom: str) -> date:
     raise RegistreInvalide(f"{nom} : une date est attendue, reçu {valeur!r}.")
 
 
+def _total_a_ecrire(valeur: Any, nom: str) -> Decimal:
+    """Montant arrondi au centime ; `RegistreInvalide` pour un `Decimal` qui n'est pas un montant
+    (NaN, infini), `TypeError` pour tout ce qui n'est ni `Decimal` ni entier, un `float` compris
+    (`heures.arrondi_centime`)."""
+    if isinstance(valeur, Decimal) and not valeur.is_finite():
+        raise RegistreInvalide(f"{nom} : « {valeur} » n'est pas un montant.")
+    return heures.arrondi_centime(valeur)
+
+
 def ligne_pour_emission(*, n_facture: str, ecole: str, contrat: str | None, periode: str,
                         date_emission: date, echeance: date, total_ht: Decimal) -> dict[str, Any]:
     """Ligne du registre d'une facture qu'on émet (F-17) : les 11 colonnes, statut « en émission »,
     dates d'envoi et de paiement vides, total arrondi au centime.
 
     Raises:
-        RegistreInvalide: N° vide, date qui n'en est pas une, échéance antérieure à l'émission.
+        RegistreInvalide: N° vide, date qui n'en est pas une, échéance antérieure à l'émission,
+            total qui n'est pas un montant (NaN, infini).
         TypeError: total qui n'est pas un `Decimal` (un `float` compris).
     """
     numero = _texte(n_facture)
@@ -532,6 +608,7 @@ def ligne_pour_emission(*, n_facture: str, ecole: str, contrat: str | None, peri
         raise RegistreInvalide(
             f"N° {numero} : échéance {_jj(limite)} antérieure à la date d'émission {_jj(emission)}."
         )
+    total = _total_a_ecrire(total_ht, f"N° {numero} : total_ht")
     return {
         COL_NUMERO: numero,
         COL_ECOLE: _texte(ecole) or None,
@@ -539,7 +616,7 @@ def ligne_pour_emission(*, n_facture: str, ecole: str, contrat: str | None, peri
         COL_PERIODE: _texte(periode) or None,
         COL_EMISSION: emission,
         COL_ECHEANCE: limite,
-        COL_TOTAL: heures.arrondi_centime(total_ht),
+        COL_TOTAL: total,
         COL_ENVOI: None,
         COL_PAIEMENT: None,
         COL_STATUT: EN_EMISSION,
@@ -582,6 +659,12 @@ def _texte_a_ecrire(valeur: Any, colonne: str) -> str | None:
         raise RegistreInvalide(
             f"Colonne « {colonne} » : « {texte} » commence par « = » : l'outil n'écrit jamais de formule."
         )
+    interdit = ILLEGAL_CHARACTERS_RE.search(texte)
+    if interdit:
+        raise RegistreInvalide(
+            f"Colonne « {colonne} » : le texte porte un caractère de contrôle (code {ord(interdit.group())}) "
+            "qu'un classeur Excel ne peut pas enregistrer ; retirez-le, puis relancez ; rien n'a été modifié."
+        )
     return texte or None
 
 
@@ -594,7 +677,7 @@ def _valeur_a_ecrire(colonne: str, valeur: Any) -> Any:
     if colonne == COL_TOTAL:
         if isinstance(valeur, str):
             raise RegistreInvalide(f"Colonne « {COL_TOTAL} » : un montant (Decimal) est attendu, reçu {valeur!r}.")
-        return heures.arrondi_centime(valeur)
+        return _total_a_ecrire(valeur, f"Colonne « {COL_TOTAL} »")
     if colonne == COL_STATUT:
         try:
             statut = _lire_statut(valeur)
@@ -664,8 +747,9 @@ def ajouter_ligne(ws: Worksheet, ligne: Mapping[str, Any]) -> int:
         Le numéro de la ligne écrite.
 
     Raises:
-        RegistreInvalide: N° vide ou déjà au registre (sans tenir compte de la casse), colonne
-            inconnue, valeur qui ne convient pas à sa colonne (texte en « = », statut calculé),
+        RegistreInvalide: N° vide ou déjà au registre (même forme de comparaison, voir
+            `cle_numero`), colonne inconnue, valeur qui ne convient pas à sa colonne (texte en
+            « = » ou qui porte un caractère de contrôle, statut calculé, total NaN ou infini),
             cellule cible à formule ; la feuille n'est pas modifiée.
         master.MasterInvalide: colonne du registre absente ou en double.
     """
@@ -745,6 +829,8 @@ def _modifier(ws: Worksheet, n_facture: str, *, remplacer: bool, champs: Mapping
         emission = _lire_date(cellule(COL_EMISSION).value, COL_EMISSION)
     except _Illisible as exc:
         raise RegistreInvalide(f"onglet « {ONGLET} », ligne {rang}, {exc}.") from None
+    envoi_saisi = not _est_vide(cellule(COL_ENVOI).value)
+    paiement_saisi = not _est_vide(cellule(COL_PAIEMENT).value)
 
     if statut == ABANDONNEE and set(valides) - {"note"}:
         raise RegistreInvalide(f"N° {numero} : facture abandonnée ; seule sa note peut encore changer.")
@@ -798,18 +884,29 @@ def _modifier(ws: Worksheet, n_facture: str, *, remplacer: bool, champs: Mapping
     nouveau = statut
     if "statut" in valides:
         demande = valides["statut"]
-        if demande == EMISE and statut in (EN_EMISSION, "", EMISE):
+        actuel = f"« {statut} »" if statut else "vide"
+        if demande == EMISE:
+            if statut not in (EN_EMISSION, "", EMISE):
+                raise RegistreInvalide(
+                    f"N° {numero} : le statut {actuel} ne revient pas à « {EMISE} » : seule une facture « {EN_EMISSION} » "
+                    f"(ou sans statut) passe à « {EMISE} » ; rien n'a été modifié."
+                )
             nouveau = EMISE
-        elif demande == ABANDONNEE and statut in (EN_EMISSION, EMISE, ""):
-            nouveau = ABANDONNEE
-        else:
+        elif statut != EN_EMISSION:
             raise RegistreInvalide(
-                f"N° {numero} : le statut « {statut} » ne passe pas à « {demande} » (une facture envoyée ou payée "
-                "ne s'abandonne pas : faites un avoir)."
+                f"N° {numero} : statut {actuel} : seule une facture « {EN_EMISSION} » peut être notée « {ABANDONNEE} » "
+                "(§ 8.7) ; une facture émise ne s'abandonne pas, elle se corrige par un avoir ; rien n'a été modifié."
             )
+        elif envoi_saisi or paiement_saisi:
+            raise RegistreInvalide(
+                f"N° {numero} : facture « {EN_EMISSION} » qui porte déjà une date d'envoi ou de paiement : elle ne peut "
+                f"pas être notée « {ABANDONNEE} » ; vérifiez la ligne dans Excel ; rien n'a été modifié."
+            )
+        else:
+            nouveau = ABANDONNEE
     if "date_paiement" in valides:
         nouveau = PAYEE
-    elif "date_envoi" in valides and nouveau in (EMISE, ""):
+    elif "date_envoi" in valides and nouveau in (EMISE, "") and not paiement_saisi:
         nouveau = ENVOYEE
     if nouveau != statut:
         changements[COL_STATUT] = (statut_brut, nouveau)
@@ -826,9 +923,11 @@ def modifier_ligne(ws: Worksheet, n_facture: str, *, remplacer: bool = False, **
     """Modifie la ligne d'une facture du registre. Ne prend aucun verrou et n'enregistre rien.
 
     Champs admis : `date_envoi`, `date_paiement`, `statut` (réservé à l'émission, F-17 : « émise »
-    ou « abandonnée ») et `note`. Une date d'envoi fait passer le statut « émise » à « envoyée » ;
-    une date de paiement fait passer le statut à « payée ». « Échue » n'est jamais écrit. Une
-    date égale à celle déjà saisie ne change rien.
+    ou « abandonnée ») et `note`. Une date d'envoi fait passer le statut « émise » à « envoyée »
+    (pas sur une facture dont la date de paiement est déjà saisie) ; une date de paiement fait
+    passer le statut à « payée ». « Échue » n'est jamais écrit. Une date égale à celle déjà
+    saisie ne change rien. « abandonnée » ne s'écrit que sur une facture « en émission » sans
+    date d'envoi ni de paiement.
 
     Returns:
         {colonne : (valeur avant, valeur après)} des seules cellules changées.
@@ -839,8 +938,9 @@ def modifier_ligne(ws: Worksheet, n_facture: str, *, remplacer: bool = False, **
         RegistreInvalide: N° absent ou ambigu, ligne abandonnée (sauf la note), facture encore
             « en émission » (envoi, paiement), date antérieure à l'émission, cellule déjà remplie
             d'une autre valeur sans `remplacer=True`, cellule cible à formule (même avec
-            `remplacer=True`), passage de statut impossible. Sur refus, la feuille n'est pas
-            modifiée.
+            `remplacer=True`), passage de statut impossible (abandon d'une facture qui n'est
+            pas « en émission », retour à « émise » d'une facture envoyée ou payée), note qui
+            porte un caractère de contrôle. Sur refus, la feuille n'est pas modifiée.
         master.MasterInvalide: colonne du registre absente ou en double.
     """
     return _modifier(ws, n_facture, remplacer=remplacer, champs=champs)[2]
@@ -910,8 +1010,10 @@ def lignes_historiques(master: Master) -> list[dict[str, Any]]:
             total = None
         else:
             total = heures.arrondi_centime(sum((s.total_ht for s in lignes), Decimal(0)))  # type: ignore[misc]
+        # Le N° tel que Sessions l'écrit (variante « R_ABC_007 » comprise), en majuscules et sans espaces.
+        ecrit = "".join(c for c in _texte(lignes[0].n_facture) if not c.isspace() and unicodedata.category(c) != "Cf")
         proposees.append({
-            COL_NUMERO: cle,
+            COL_NUMERO: ecrit.upper(),
             COL_ECOLE: ecoles[0] if ecoles else None,
             COL_CONTRAT: None,
             COL_PERIODE: ", ".join(periodes) or None,
@@ -1014,16 +1116,21 @@ def _instantane(wb: Workbook) -> dict[tuple[str, str], Any]:
     return resultat
 
 
-def _verifier_relecture(chemin: Path, avant: dict[tuple[str, str], Any], onglets_avant: list[str],
-                        resultat: _Resultat, sauvegarde: Path) -> None:
+def _ecarts_a_la_relecture(chemin: Path, avant: dict[tuple[str, str], Any], onglets_avant: list[str],
+                           resultat: _Resultat) -> list[str]:
     """Relit le MASTER enregistré : mêmes onglets (plus ceux créés), et seules les cellules annoncées
-    ont changé, avec la valeur annoncée."""
-    wb = load_workbook(chemin, data_only=False)
+    ont changé, avec la valeur annoncée. Rend les écarts, une phrase par écart ; une relecture
+    impossible est un écart."""
     try:
-        onglets_apres = list(wb.sheetnames)
-        apres = _instantane(wb)
-    finally:
-        wb.close()
+        wb = load_workbook(chemin, data_only=False)
+        try:
+            onglets_apres = list(wb.sheetnames)
+            apres = _instantane(wb)
+        finally:
+            wb.close()
+    except (PermissionError, *_ERREURS_OUVERTURE) as exc:
+        return [f"le MASTER n'a pas pu être relu après l'enregistrement ({type(exc).__name__} : {exc}) : le contrôle "
+                "après écriture n'a pas pu se faire"]
     ecarts: list[str] = []
     attendus = onglets_avant + [o for o in resultat.onglets_crees if o not in onglets_avant]
     if onglets_apres != attendus:
@@ -1037,30 +1144,61 @@ def _verifier_relecture(chemin: Path, avant: dict[tuple[str, str], Any], onglets
     if fausses:
         ecarts.append("cellule(s) relue(s) avec une autre valeur que celle écrite : "
                       + ", ".join(f"{o}!{c}" for o, c in fausses[:5]))
-    if ecarts:
-        raise EcritureNonConforme(
-            f"Contrôle après écriture du MASTER {chemin.name} non conforme : {' ; '.join(ecarts)}. La sauvegarde "
-            f"{sauvegarde} contient le MASTER d'avant l'écriture : comparez, et restaurez-la si besoin."
-        )
+    return ecarts
 
 
 def _refuser_si_perte(chemin: Path) -> None:
-    """Refuse d'écrire un MASTER qu'un enregistrement par openpyxl abîmerait (§ 15)."""
-    pertes = [perte for perte in fidelite_aller_retour(chemin) if _PERTE_TOLEREE not in perte]
+    """Refuse d'écrire un MASTER qu'un enregistrement par openpyxl abîmerait (§ 15), y compris la
+    valeur en cache des formules des onglets que l'outil lit : elles se liraient vides (un N° de
+    `Sessions` disparaîtrait de la numérotation, une échéance du registre)."""
+    pertes = fidelite_aller_retour(chemin)
     if pertes:
         raise RegistreInvalide(
             f"Écriture refusée : un enregistrement du MASTER {chemin.name} par l'outil perdrait : "
-            f"{' ; '.join(pertes)}. Faites la saisie dans Excel ; rien n'a été modifié."
+            f"{' ; '.join(pertes)}. Faites la saisie dans Excel (ou remplacez ces formules par leurs valeurs, "
+            "puis relancez) ; rien n'a été modifié."
         )
 
 
-def _ecrire(profil: Profil, operation: Operation) -> Path:
+def _forme_comparable(valeur: Any) -> Any:
+    """Aperçu sous une forme comparable d'un chargement à l'autre (dates, montants, conteneurs)."""
+    if isinstance(valeur, Mapping):
+        return tuple(sorted((str(cle), _forme_comparable(v)) for cle, v in valeur.items()))
+    if isinstance(valeur, (list, tuple)):
+        return tuple(_forme_comparable(v) for v in valeur)
+    if isinstance(valeur, str):
+        return _texte(valeur)
+    return _comparable(valeur)
+
+
+def _refuser_si_change(resultat: _Resultat, apercu_valide: Any) -> None:
+    """Ce qui est écrit est ce qui a été validé (§ 1.3) : refus si l'aperçu a changé depuis."""
+    if apercu_valide is None or _forme_comparable(resultat.apercu) == _forme_comparable(apercu_valide):
+        return
+    raise RegistreInvalide(
+        "Le MASTER a changé depuis l'aperçu que vous avez validé (une saisie dans Excel entre-temps ?) : l'écriture "
+        "ne correspond plus à ce qui a été montré. Rien n'a été écrit : relancez la commande pour voir le nouvel "
+        "aperçu."
+    )
+
+
+def _ecrire(profil: Profil, operation: Operation, apercu_valide: Any = None) -> Path:
     """Joue l'opération à blanc (un refus ne laisse aucune trace), puis sous `ecriture_master` :
-    enregistrement atomique, événements `registre`, relecture. Rend la sauvegarde."""
+    enregistrement atomique, événements `registre`, relecture. Rend la sauvegarde.
+
+    `apercu_valide` : l'aperçu montré et validé (None : pas de contrôle) ; s'il diffère de ce que
+    l'opération ferait, l'écriture est refusée sans rien écrire.
+
+    Raises:
+        EcritureNonConforme: après l'enregistrement, la relecture trouve autre chose que les
+            cellules annoncées, ne peut pas se faire, ou le journal ne s'écrit pas ; le MASTER est
+            écrit, le message cite la sauvegarde.
+    """
     chemins.refuser_racine_dans_un_depot(profil.racine)
     essai = _a_blanc(profil, operation)
     if not essai.cellules:
         raise RegistreInvalide(f"{essai.rien[:1].upper()}{essai.rien[1:]} : rien n'a été écrit.")
+    _refuser_si_change(essai, apercu_valide)
     _refuser_si_perte(profil.master)
     poste = poste_courant()
     with ecriture_master(profil.master, poste=poste) as sauvegarde:
@@ -1071,16 +1209,36 @@ def _ecrire(profil: Profil, operation: Operation) -> Path:
             resultat = operation(wb)
             if not resultat.cellules:
                 raise RegistreInvalide(f"{resultat.rien[:1].upper()}{resultat.rien[1:]} : rien n'a été écrit.")
+            _refuser_si_change(resultat, apercu_valide)
             fichiers.enregistrer_classeur_atomique(wb, profil.master)
         finally:
             wb.close()
+        # Le MASTER est écrit : une erreur de journal ou de relecture ne doit plus laisser croire le contraire.
         chemin_journal = chemins.journal_ecritures(profil)
-        for numero, valeurs_avant, valeurs_apres in resultat.evenements:
-            journal.ajouter_evenement(
-                chemin_journal, "registre", poste=poste, entite=profil.entite,
-                n_facture=numero, avant=valeurs_avant, apres=valeurs_apres, sauvegarde=sauvegarde,
+        erreur_journal = None
+        try:
+            for numero, valeurs_avant, valeurs_apres in resultat.evenements:
+                journal.ajouter_evenement(
+                    chemin_journal, "registre", poste=poste, entite=profil.entite,
+                    n_facture=numero, avant=valeurs_avant, apres=valeurs_apres, sauvegarde=sauvegarde,
+                )
+        except (OSError, ValueError, TypeError) as exc:
+            erreur_journal = exc
+        ecarts = _ecarts_a_la_relecture(profil.master, avant, onglets_avant, resultat)
+    if erreur_journal is not None or ecarts:
+        problemes = []
+        if erreur_journal is not None:
+            problemes.append(
+                f"le journal des écritures {chemin_journal} n'a pas pu être complété "
+                f"({type(erreur_journal).__name__} : {erreur_journal}) : notez cette écriture à la main"
             )
-        _verifier_relecture(profil.master, avant, onglets_avant, resultat, sauvegarde)
+        if ecarts:
+            problemes.append(f"contrôle après écriture non conforme : {' ; '.join(ecarts)}")
+        raise EcritureNonConforme(
+            f"Le MASTER {profil.master.name} a été écrit, mais {' ; '.join(problemes)}. La sauvegarde {sauvegarde} "
+            "contient le MASTER d'avant l'écriture : ouvrez le MASTER pour vérifier, et restaurez la sauvegarde "
+            "si besoin."
+        )
     return sauvegarde
 
 
@@ -1120,42 +1278,75 @@ def apercu_mise_a_jour(profil: Profil, n_facture: str, *, date_envoi: date | Non
 
 def mettre_a_jour_registre(profil: Profil, n_facture: str, *, date_envoi: date | None = None,
                            date_paiement: date | None = None, note: str | None = None,
-                           remplacer: bool = False, confirme: bool) -> Path:
+                           remplacer: bool = False, confirme: bool,
+                           apercu_valide: Mapping[str, tuple[Any, Any]] | None = None) -> Path:
     """Note la date d'envoi, la date de paiement ou une note d'une facture du registre.
 
     Sous `ecriture_master` (refus d'un MASTER ouvert, verrou, sauvegarde), enregistrement atomique
-    et relecture ; un événement `registre` au journal des écritures.
+    et relecture ; un événement `registre` au journal des écritures. `apercu_valide` : ce que
+    `apercu_mise_a_jour` a montré et qui a été validé ; une écriture qui ne lui correspond plus
+    est refusée (§ 1.3).
 
     Returns:
         La sauvegarde du MASTER faite avant l'écriture.
 
     Raises:
         ValueError: « validation explicite requise » sans `confirme=True` ; aucun champ donné.
-        RegistreInvalide: refus de `modifier_ligne`, onglet absent, rien ne change ; rien n'est
-            écrit, ni sauvegardé, ni journalisé.
+        RegistreInvalide: refus de `modifier_ligne`, onglet absent, rien ne change, perte à
+            l'enregistrement (`fidelite_aller_retour`, formules comprises), aperçu validé qui a
+            changé ; rien n'est écrit, ni sauvegardé, ni journalisé.
         master.MasterVerrouille: MASTER ouvert ou en cours d'écriture ailleurs ; rien n'est écrit.
-        EcritureNonConforme: la relecture trouve autre chose que les cellules annoncées.
+        EcritureNonConforme: après l'enregistrement, relecture non conforme ou impossible, ou
+            journal qui ne s'écrit pas ; le MASTER est écrit.
     """
     _confirmation(confirme)
     champs = _champs_mise_a_jour(date_envoi, date_paiement, note)
-    return _ecrire(profil, _operation_mise_a_jour(n_facture, champs, remplacer))
+    return _ecrire(profil, _operation_mise_a_jour(n_facture, champs, remplacer), apercu_valide)
 
 
-def _numero_et_ecole(n_facture: str, profil: Profil) -> tuple[str, str]:
-    """N° en majuscules et code école qu'il porte (« R_ABC002 » → ABC), au préfixe du profil."""
+def codes_ecoles(master: Master) -> list[str]:
+    """Codes des écoles de `Règles_facturation` et de `Écoles` (ADR029), sans doublon, dans
+    l'ordre de lecture ; un libellé ou un code illisible est ignoré."""
+    valeurs = [ligne.get("École") for ligne in master.regles_facturation]
+    valeurs += [ligne.get("Code facturation") or ligne.get("École") for ligne in master.ecoles]
+    codes: list[str] = []
+    for valeur in valeurs:
+        try:
+            code = valider_code_ecole(code_ecole(valeur, master.ecoles) or "")
+        except ValueError:
+            continue
+        if code not in codes:
+            codes.append(code)
+    return codes
+
+
+def _numero_et_ecole(n_facture: str, profil: Profil, codes: Sequence[str]) -> tuple[str, str]:
+    """N° sous sa forme de comparaison et code école qu'il porte (« R_ABC002 » → ABC), au préfixe
+    du profil, parmi les écoles connues `codes`."""
     cle = _cle(n_facture)
     prefixe = profil.prefixe_facture
-    trouve = re.fullmatch(rf"{re.escape(prefixe)}([A-Z][A-Z0-9]*?)_?(\d{{3}})", cle)
-    if not trouve:
+    if not re.fullmatch(rf"{re.escape(prefixe)}[A-Z][A-Z0-9]*\d{{3}}", cle):
         raise RegistreInvalide(
             f"N° « {_texte(n_facture)} » : attendu {prefixe}<CODE ÉCOLE><NNN> (ex. {prefixe}ABC002), au préfixe "
             f"de l'entité {profil.entite}."
         )
-    return cle, valider_code_ecole(trouve.group(1))
+    for code in sorted(codes, key=len, reverse=True):
+        if re.fullmatch(rf"{re.escape(prefixe)}{re.escape(code)}\d{{3}}", cle):
+            return cle, code
+    connues = ", ".join(codes) or "aucune"
+    raise RegistreInvalide(
+        f"N° « {_texte(n_facture)} » : aucune école connue ne porte ce N° ({prefixe}<CODE ÉCOLE><NNN>, rang sur "
+        f"3 chiffres ; écoles des onglets « Écoles » et « Règles_facturation » : {connues}). Vérifiez le N°."
+    )
 
 
 def _numeros_sessions(wb: Workbook) -> set[str]:
     """N° de la colonne `N°_Facture` de l'onglet `Sessions`, sous leur forme de comparaison."""
+    if "Sessions" not in wb.sheetnames:
+        raise RegistreInvalide(
+            "Onglet « Sessions » absent du MASTER : sans lui, impossible de vérifier qu'un numéro n'a jamais servi. "
+            "Rétablissez l'onglet Sessions (MASTER_SCHEMA), puis relancez ; rien n'a été modifié."
+        )
     ws = wb["Sessions"]
     colonne = index_colonnes(ws, ("N°_Facture",), onglet="Sessions")["N°_Facture"]
     return {
@@ -1164,16 +1355,40 @@ def _numeros_sessions(wb: Workbook) -> set[str]:
     } - {""}
 
 
-def _operation_manquant(numero: str, ecole: str, raison: str) -> Operation:
+def _refuser_hors_serie(numero: str, profil: Profil, code: str) -> None:
+    """ADR029 : un numéro manquant est un trou de la série, ou le numéro qui suit le plus grand ;
+    tout autre N° (faute de frappe qui ferait sauter la série) est refusé."""
+    prefixe = profil.prefixe_facture
+    numeros = lire_numeros(profil.master)
+    admis = numeros_manquants(numeros, prefixe=prefixe, code_ecole=code)
+    try:
+        suivant = prochain_numero(numeros, prefixe=prefixe, code_ecole=code)
+    except ValueError:  # série complète (999) : seuls les trous restent
+        suivant = None
+    if numero in admis or numero == suivant:
+        return
+    trous = ", ".join(admis) or "aucun"
+    raise RegistreInvalide(
+        f"N° {numero} : il ne manque pas à la série {prefixe}{code} (ADR029). Numéros manquants : {trous}"
+        f"{f' ; numéro suivant : {suivant}' if suivant else ''}. Vérifiez le N° : noter un numéro au-delà ferait "
+        "sauter la série ; rien n'a été modifié."
+    )
+
+
+def _operation_manquant(profil: Profil, n_facture: str, raison: str) -> Operation:
     def operation(wb: Workbook) -> _Resultat:
         ws = _onglet(wb)
-        if numero in _numeros_sessions(wb):
+        numeros_sessions = _numeros_sessions(wb)
+        numero, ecole = _numero_et_ecole(n_facture, profil, codes_ecoles(lire_master(profil.master)))
+        if numero in numeros_sessions:
             raise RegistreInvalide(
                 f"N° {numero} : il figure dans l'onglet « Sessions », il a donc servi ; ce n'est pas un numéro "
                 f"manquant (reprenez-le avec `facturation {COMMANDE_REPRISE}`)."
             )
         if not isinstance(raison, str) or not raison.strip():
             raise RegistreInvalide(f"N° {numero} : la raison du numéro manquant est obligatoire (ADR029).")
+        if not _rangs_du_numero(ws, _index(ws), numero):  # déjà au registre : refusé par `_ajouter`
+            _refuser_hors_serie(numero, profil, ecole)
         ligne = {COL_NUMERO: numero, COL_ECOLE: ecole, COL_STATUT: ABANDONNEE, COL_NOTE: raison.strip()}
         _, ecrites = _ajouter(ws, ligne)
         resultat = _Resultat(apercu=ligne)
@@ -1187,27 +1402,31 @@ def _operation_manquant(numero: str, ecole: str, raison: str) -> Operation:
 def apercu_manquant(profil: Profil, n_facture: str, *, raison: str) -> dict[str, Any]:
     """Ce que ferait `noter_manquant`, sans rien écrire : la ligne ajoutée {colonne : valeur}.
     Mêmes refus que `noter_manquant`."""
-    numero, ecole = _numero_et_ecole(n_facture, profil)
-    return _a_blanc(profil, _operation_manquant(numero, ecole, raison)).apercu
+    return _a_blanc(profil, _operation_manquant(profil, n_facture, raison)).apercu
 
 
-def noter_manquant(profil: Profil, n_facture: str, *, raison: str, confirme: bool) -> Path:
+def noter_manquant(profil: Profil, n_facture: str, *, raison: str, confirme: bool,
+                   apercu_valide: Mapping[str, Any] | None = None) -> Path:
     """Note au registre la raison d'un numéro manquant (ADR029) : une ligne au statut
-    « abandonnée », école déduite du N° et du préfixe du profil (« R_ABC002 » → ABC).
+    « abandonnée », école déduite du N° et du préfixe du profil (« R_ABC002 » → ABC), parmi les
+    écoles de `Écoles` et de `Règles_facturation`. Seul un numéro qui manque à la série se note :
+    un trou, ou le numéro qui suit le plus grand. `apercu_valide` : la ligne montrée par
+    `apercu_manquant` et validée (§ 1.3).
 
     Returns:
         La sauvegarde du MASTER faite avant l'écriture.
 
     Raises:
         ValueError: « validation explicite requise » sans `confirme=True`.
-        RegistreInvalide: N° mal formé ou d'un autre préfixe, déjà au registre, présent dans
-            `Sessions` ; raison vide ; onglet absent. Rien n'est écrit.
+        RegistreInvalide: N° mal formé, d'un autre préfixe ou d'une école inconnue, qui ne manque
+            pas à la série, déjà au registre, présent dans `Sessions` ; raison vide ; onglet
+            `Factures` ou `Sessions` absent ; perte à l'enregistrement. Rien n'est écrit.
         master.MasterVerrouille: MASTER ouvert ou en cours d'écriture ailleurs ; rien n'est écrit.
-        EcritureNonConforme: la relecture trouve autre chose que les cellules annoncées.
+        EcritureNonConforme: après l'enregistrement, relecture non conforme ou impossible, ou
+            journal qui ne s'écrit pas ; le MASTER est écrit.
     """
     _confirmation(confirme)
-    numero, ecole = _numero_et_ecole(n_facture, profil)
-    return _ecrire(profil, _operation_manquant(numero, ecole, raison))
+    return _ecrire(profil, _operation_manquant(profil, n_facture, raison), apercu_valide)
 
 
 def _operation_initialiser(profil: Profil, reprendre_historique: bool) -> Operation:
@@ -1245,10 +1464,12 @@ def apercu_initialisation(profil: Profil, *, reprendre_historique: bool) -> tupl
     return _a_blanc(profil, _operation_initialiser(profil, reprendre_historique)).apercu
 
 
-def initialiser_registre(profil: Profil, *, reprendre_historique: bool, confirme: bool) -> Path:
+def initialiser_registre(profil: Profil, *, reprendre_historique: bool, confirme: bool,
+                         apercu_valide: tuple[bool, list[dict[str, Any]]] | None = None) -> Path:
     """Crée l'onglet `Factures` s'il manque (en fin de classeur, l'ordre des autres onglets ne
     change pas) et, avec `reprendre_historique`, y ajoute les lignes de `lignes_historiques` (sur
     un registre existant, seulement les N° de `Sessions` qui y manquent, sans toucher aux autres).
+    `apercu_valide` : ce que `apercu_initialisation` a montré et qui a été validé (§ 1.3).
 
     Returns:
         La sauvegarde du MASTER faite avant l'écriture.
@@ -1256,12 +1477,14 @@ def initialiser_registre(profil: Profil, *, reprendre_historique: bool, confirme
     Raises:
         ValueError: « validation explicite requise » sans `confirme=True`.
         RegistreInvalide: onglet déjà présent sans reprise, rien à reprendre, `Sessions` ou
-            registre illisible. Rien n'est écrit.
+            registre illisible, perte à l'enregistrement, aperçu validé qui a changé. Rien n'est
+            écrit.
         master.MasterVerrouille: MASTER ouvert ou en cours d'écriture ailleurs ; rien n'est écrit.
-        EcritureNonConforme: la relecture trouve autre chose que les cellules annoncées.
+        EcritureNonConforme: après l'enregistrement, relecture non conforme ou impossible, ou
+            journal qui ne s'écrit pas ; le MASTER est écrit.
     """
     _confirmation(confirme)
-    return _ecrire(profil, _operation_initialiser(profil, reprendre_historique))
+    return _ecrire(profil, _operation_initialiser(profil, reprendre_historique), apercu_valide)
 
 
 # ──────────────────────────────────────────────────────────────────────
