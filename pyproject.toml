@@ -11,7 +11,10 @@ requires-python = ">=3.11"
 license = { text = "Propriétaire — tous droits réservés" }
 authors = [{ name = "Adrian Rosari" }]
 dependencies = [
-    "openpyxl>=3.1",
+    # Épinglé en 3.1.x : le clonage du gabarit s'appuie sur une structure interne
+    # d'openpyxl (pcf_format._recopier_cellules). Avant de relever la borne, lancer
+    # tests/unit/test_clonage.py, qui vérifie ce contrat.
+    "openpyxl>=3.1,<3.2",
     # Lecture de l'agenda iCal (F-10) : développement des récurrences, exceptions,
     # occurrences déplacées et changements d'heure.
     "icalendar>=6.0",
@@ -40,5 +43,6 @@ markers = [
     "unit: fonctions pures, sans fichier externe",
     "integration: plusieurs modules ou scripts, sur données fictives",
     "regression: non-régression du format et du rendu des factures",
+    "recette: parcours complet d'une facture, vérifié sur le fichier relu depuis le disque",
     "e2e: parcours dans l'appli avec Playwright (lot 2)",
 ]
