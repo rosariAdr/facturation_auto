@@ -11,9 +11,10 @@ l'onglet et la colonne fautifs.
 À l'entrée du bloc, dans cet ordre :
 1. refus si le classeur est ouvert (fichier `~$<nom>` d'Excel ou `.~lock.<nom>#` de
    LibreOffice à côté, ou fichier inaccessible en écriture) ;
-2. pose du verrou `<ENTITE>_MASTER.verrou`, qui porte le nom du poste et l'heure ; le verrou
-   d'un autre poste bloque (un seul écrivain à la fois, ADR032) ; un verrou laissé par le
-   même poste, après un arrêt brutal, est remplacé avec un avertissement ;
+2. pose du verrou `<ENTITE>_MASTER.verrou`, qui porte le nom du poste, l'heure et le numéro
+   du processus ; le verrou d'un autre poste bloque (un seul écrivain à la fois, ADR032), comme
+   celui d'une autre instance de l'outil qui tourne encore sur ce poste ; un verrou laissé par
+   le même poste, après un arrêt brutal, est remplacé avec un avertissement ;
 3. copie intacte du MASTER dans `sauvegardes/<nom>_AAAAMMJJ-HHMMSS.xlsx`, avant toute
    écriture (ADR013) ; deux sauvegardes dans la même seconde prennent un suffixe `-1`, `-2`…
 À la sortie, même sur erreur, le verrou est retiré.
@@ -26,9 +27,11 @@ from __future__ import annotations
 import os
 import platform
 import shutil
+import sys
 import unicodedata
 import warnings
 import zipfile
+import zlib
 from contextlib import closing, contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -77,15 +80,26 @@ DOSSIER_SAUVEGARDES = "sauvegardes"
 SUFFIXE_VERROU = ".verrou"
 _FORMAT_HORODATAGE = "%Y%m%d-%H%M%S"
 
+# Erreurs d'un xlsx abîmé, levées par openpyxl, zipfile ou zlib à l'ouverture comme pendant la
+# lecture des lignes : partie absente de l'archive (KeyError), XML corrompu (SyntaxError, dont
+# héritent ParseError d'ElementTree et XMLSyntaxError de lxml), archive ou compression abîmée,
+# valeur ou attribut invalide (ValueError, TypeError), fichier qui ne se lit plus (OSError).
+# Elles ne sont interceptées qu'autour des appels à openpyxl, jamais autour du code de ce module.
+_ERREURS_DE_LECTURE = (
+    KeyError, SyntaxError, ValueError, TypeError, IndexError, EOFError, OSError,
+    zipfile.BadZipFile, zipfile.LargeZipFile, zlib.error, InvalidFileException,
+)
+
 Ligne = dict[str, Any]
 
 
 class MasterInvalide(ValueError):
-    """Le MASTER ne respecte pas MASTER_SCHEMA : onglet ou colonne manquant, en double, etc."""
+    """Le MASTER ne respecte pas MASTER_SCHEMA (onglet ou colonne manquant, en double…) ou est abîmé."""
 
 
 class MasterVerrouille(RuntimeError):
-    """Écriture refusée : le classeur est ouvert, ou un autre poste écrit dans le MASTER."""
+    """Classeur inaccessible : ouvert dans Excel ou LibreOffice, ou un autre poste ou une autre
+    instance de l'outil écrit dans le MASTER."""
 
 
 @dataclass
@@ -119,10 +133,39 @@ def _liste(noms: list[str] | tuple[str, ...]) -> str:
     return ", ".join(f"« {n} »" for n in noms)
 
 
+def _abime(nom_fichier: str, exc: BaseException, onglet: str | None = None) -> MasterInvalide:
+    """Erreur qui nomme le fichier abîmé (et l'onglet, si l'erreur vient de sa lecture)."""
+    ou = f", onglet « {onglet} »" if onglet else ""
+    return MasterInvalide(
+        f"MASTER {nom_fichier}{ou} : classeur abîmé ou illisible ({type(exc).__name__} : {exc}). "
+        "Ouvrez-le dans Excel, qui propose de le réparer, ou reprenez sa dernière copie du dossier "
+        f"« {DOSSIER_SAUVEGARDES} »."
+    )
+
+
+def _lignes(ws, onglet: str, nom_fichier: str) -> Iterator[tuple]:
+    """Valeurs des lignes de l'onglet ; une erreur de lecture du fichier devient `MasterInvalide`."""
+    # En lecture seule, openpyxl se fie à la dimension déclarée par le fichier, qui peut être
+    # fausse (A1:A1, ligne d'en-tête seule) : il refuserait un MASTER valide ou perdrait des lignes.
+    ws.reset_dimensions()
+    lignes = ws.iter_rows(values_only=True)
+    try:
+        while True:
+            try:
+                valeurs = next(lignes)
+            except StopIteration:
+                return
+            except _ERREURS_DE_LECTURE as exc:  # feuille abîmée plus loin que son début
+                raise _abime(nom_fichier, exc, onglet) from exc
+            yield valeurs
+    finally:
+        lignes.close()
+
+
 def _lire_onglet(ws, onglet: str, attendues: tuple[str, ...], nom_fichier: str) -> list[Ligne]:
     """Lit un onglet par le nom de ses colonnes (en-têtes en ligne 1)."""
     # Parcours fermé même sur erreur : en lecture seule, il garde le fichier ouvert (Windows).
-    with closing(ws.iter_rows(values_only=True)) as lignes:
+    with closing(_lignes(ws, onglet, nom_fichier)) as lignes:
         entetes = [_nom(v) for v in next(lignes, ())]
 
         vues: set[str] = set()
@@ -161,16 +204,23 @@ def lire_master(chemin: str | os.PathLike) -> Master:
 
     Raises:
         FileNotFoundError: le fichier n'existe pas.
-        MasterInvalide: fichier illisible, onglet obligatoire absent, colonne manquante ou en
-            double dans un onglet lu ; le message nomme l'onglet et la colonne.
+        MasterVerrouille: le système refuse l'ouverture (classeur ouvert dans Excel, droits).
+        MasterInvalide: fichier abîmé ou illisible (le message nomme le fichier), onglet
+            obligatoire absent, colonne manquante ou en double dans un onglet lu (le message
+            nomme l'onglet et la colonne).
     """
     chemin = Path(chemin)
     if not chemin.is_file():
         raise FileNotFoundError(f"MASTER introuvable : {chemin}")
     try:
         wb = load_workbook(chemin, read_only=True, data_only=True)
-    except (zipfile.BadZipFile, InvalidFileException) as exc:
-        raise MasterInvalide(f"MASTER {chemin.name} : ce n'est pas un classeur Excel lisible ({exc}).") from exc
+    except PermissionError as exc:  # avant OSError, qui figure dans _ERREURS_DE_LECTURE
+        raise MasterVerrouille(
+            f"Le MASTER {chemin.name} ne s'ouvre pas (accès refusé) : fermez le classeur s'il est "
+            "ouvert dans Excel, ou vérifiez vos droits sur le fichier, puis relancez."
+        ) from exc
+    except _ERREURS_DE_LECTURE as exc:
+        raise _abime(chemin.name, exc) from exc
 
     try:
         absents = [o for o in ONGLETS_OBLIGATOIRES if o not in wb.sheetnames]
@@ -218,6 +268,65 @@ def _lire_verrou(verrou: Path) -> dict[str, str]:
         if signe and not ligne.lstrip().startswith("#"):
             champs[cle.strip()] = valeur.strip()
     return champs
+
+
+def _pid_du_verrou(champs: dict[str, str]) -> int | None:
+    """Numéro du processus noté dans le verrou ; None s'il est absent ou illisible (tenu pour mort)."""
+    texte = champs.get("pid", "")
+    if not (texte.isascii() and texte.isdigit()):
+        return None
+    return int(texte) or None
+
+
+# Windows : droit d'accès minimal pour lire l'état d'un processus, code de sortie « encore actif ».
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+_STILL_ACTIVE = 259
+_ERROR_ACCESS_DENIED = 5
+
+
+def _processus_vivant(pid: int) -> bool:
+    """Le processus `pid` tourne-t-il encore ? Un accès refusé compte comme vivant (prudence)."""
+    if sys.platform == "win32":
+        return _processus_vivant_windows(pid)
+    try:
+        os.kill(pid, 0)  # signal 0 : teste l'existence du processus sans rien lui envoyer
+    except ProcessLookupError:
+        return False
+    except PermissionError:  # il existe, mais appartient à un autre utilisateur
+        return True
+    except (OverflowError, ValueError):  # hors des valeurs possibles d'un pid
+        return False
+    return True
+
+
+def _processus_vivant_windows(pid: int) -> bool:
+    # Jamais `os.kill` sous Windows : quel que soit le signal, il termine le processus visé.
+    import ctypes
+    from ctypes import wintypes
+
+    if pid > 0xFFFFFFFF:  # un pid Windows tient sur 32 bits
+        return False
+    noyau = ctypes.WinDLL("kernel32", use_last_error=True)
+    noyau.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    noyau.OpenProcess.restype = wintypes.HANDLE
+    noyau.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+    noyau.GetExitCodeProcess.restype = wintypes.BOOL
+    noyau.CloseHandle.argtypes = (wintypes.HANDLE,)
+    noyau.CloseHandle.restype = wintypes.BOOL
+
+    poignee = noyau.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not poignee:
+        # Accès refusé : le processus existe. Paramètre invalide : aucun processus ne porte ce pid.
+        return ctypes.get_last_error() == _ERROR_ACCESS_DENIED
+    try:
+        code = wintypes.DWORD()
+        if not noyau.GetExitCodeProcess(poignee, ctypes.byref(code)):
+            return True  # état inconnu : prudence, le verrou n'est pas remplacé
+        # Un processus terminé reste ouvrable tant qu'une poignée le retient : seul son code de
+        # sortie dit s'il tourne encore.
+        return code.value == _STILL_ACTIVE
+    finally:
+        noyau.CloseHandle(poignee)
 
 
 def _depuis_lisible(depuis: str) -> str:
@@ -289,6 +398,14 @@ def _poser_verrou(chemin: Path, poste: str) -> tuple[Path, str]:
                 f"Le MASTER {chemin.name} est déjà en cours d'écriture par ce programme sur le poste "
                 f"« {autre} », depuis {depuis} : terminez cette écriture avant d'en commencer une autre."
             )
+        pid = _pid_du_verrou(champs)
+        if pid is not None and pid != os.getpid() and _processus_vivant(pid):
+            raise MasterVerrouille(
+                f"Le MASTER {chemin.name} est verrouillé (« {verrou.name} ») : une autre instance de "
+                f"l'outil écrit déjà sur ce poste (« {autre} », processus {pid}, depuis {depuis}). "
+                "Attendez la fin de cette écriture, puis relancez. Si aucune autre instance n'est "
+                "ouverte, supprimez le fichier verrou."
+            )
         warnings.warn(
             f"Verrou laissé par ce poste (« {autre} ») {depuis}, sans doute après un arrêt brutal : "
             f"il est remplacé (« {verrou.name} »).",
@@ -357,8 +474,9 @@ def ecriture_master(chemin: str | os.PathLike, *, poste: str) -> Iterator[Path]:
 
     Raises:
         FileNotFoundError: le MASTER n'existe pas.
-        MasterVerrouille: classeur ouvert, verrou d'un autre poste, ou écriture déjà en cours
-            dans ce programme ; rien n'est sauvegardé ni verrouillé.
+        MasterVerrouille: classeur ouvert, verrou d'un autre poste ou d'une autre instance de
+            l'outil qui tourne encore sur ce poste, ou écriture déjà en cours dans ce programme ;
+            rien n'est sauvegardé ni verrouillé.
     """
     chemin = Path(chemin)
     poste = str(poste).strip()
