@@ -38,7 +38,7 @@ def test_t_cli_01_apercu_dry_run(tmp_path):
     assert res.returncode == 0, res.stderr
     assert "TOTAL HT     : 1890.00 €" in res.stdout
     assert "[dry-run] Aucun fichier écrit." in res.stdout
-    assert not (racine / "ROSARI" / "EPITA").exists()
+    assert not (racine / "ROSARI" / "ABC").exists()
 
 
 def test_t_cli_02_ecriture_et_post_mortem(tmp_path):
@@ -52,7 +52,7 @@ def test_t_cli_02_ecriture_et_post_mortem(tmp_path):
     ws = wb[spec["onglet"]]
     assert ws["D17"].value == spec["n_facture"]
     assert ws["D14"].value == spec["ref_bon_commande"]
-    assert ws["M7"].value == "COMPTABILITE ECOLE A"
+    assert ws["M7"].value == "ÉCOLE FICTIVE A"
     post_mortem = {
         ligne.split(":")[0].strip(): ligne for ligne in res.stdout.splitlines() if ligne.startswith("  ")
     }
@@ -64,8 +64,8 @@ def test_t_coh_01_ecart_volontaire_detecte(tmp_path):
     """T-COH-01 — un écart dispensées ≠ facturées + à facturer est signalé."""
     racine = tmp_path / "donnees"
     creer_master(racine, cours=[
-        ["DOR", "Module juste", "A1", 0, 10, 6, 4, "R_DOR001", None, "En cours"],
-        ["DOR", "Module faux", "A2", 0, 10, 6, 2, "R_DOR001", None, "En cours"],
+        ["ECO", "Module juste", "A1", 0, 10, 6, 4, "R_ECO001", None, "En cours"],
+        ["ECO", "Module faux", "A2", 0, 10, 6, 2, "R_ECO001", None, "En cours"],
     ])
     res = _lancer("scripts/check_coherence.py", "--entite", "ROSARI", "--data-root", str(racine))
     assert res.returncode == 0, res.stderr
@@ -79,13 +79,13 @@ def test_coherence_signale_heures_facturees_non_dispensees(tmp_path):
     racine = tmp_path / "donnees"
     creer_master(racine, cours=[
         # Facturé sans aucune heure dispensée.
-        ["DOR", "Module non dispensé", "A1", 0, 0, 3, 0, "R_DOR001", None, "En cours"],
+        ["ECO", "Module non dispensé", "A1", 0, 0, 3, 0, "R_ECO001", None, "En cours"],
         # Même cas, mais « à facturer » négatif équilibre l'égalité dispensées = facturées + à facturer.
-        ["DOR", "Module équilibré", "A2", 0, 0, 3, -3, "R_DOR001", None, "En cours"],
+        ["ECO", "Module équilibré", "A2", 0, 0, 3, -3, "R_ECO001", None, "En cours"],
         # Heures dispensées, mais moins que les heures facturées.
-        ["DOR", "Module dépassé", "A3", 0, 10, 12, -2, "R_DOR002", None, "En cours"],
-        ["DOR", "Module juste", "A4", 0, 10, 6, 4, "R_DOR001", None, "En cours"],
-        ["DOR", "Module à venir", "A5", 20, None, None, None, None, None, "À venir"],
+        ["ECO", "Module dépassé", "A3", 0, 10, 12, -2, "R_ECO002", None, "En cours"],
+        ["ECO", "Module juste", "A4", 0, 10, 6, 4, "R_ECO001", None, "En cours"],
+        ["ECO", "Module à venir", "A5", 20, None, None, None, None, None, "À venir"],
     ])
     res = _lancer("scripts/check_coherence.py", "--entite", "ROSARI", "--data-root", str(racine))
     assert res.returncode == 0, res.stderr

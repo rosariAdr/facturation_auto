@@ -6,7 +6,7 @@ restant à facturer.
 
 Usage :
     python scripts/check_coherence.py --entite ROSARI
-    python scripts/check_coherence.py --entite ROSARI --ecole EPITA "ISG Lyon"
+    python scripts/check_coherence.py --entite ROSARI --ecole ABC "ÉCOLE FICTIVE B"
     python scripts/check_coherence.py --entite ROSARI --sessions
 """
 import argparse
