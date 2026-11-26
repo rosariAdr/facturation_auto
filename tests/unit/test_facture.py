@@ -1,4 +1,4 @@
-"""Facture dans le paquet (P-0a ; banque de tests : T-FAC-01, T-FAC-03 à T-FAC-13).
+"""Facture dans le paquet (P-0a ; banque de tests : T-FAC-01, T-FAC-03 à T-FAC-17).
 
 T-FAC-02 (aide du script, en sous-processus) est à la fin de `tests/integration/test_scripts.py`.
 
@@ -29,6 +29,7 @@ import pytest
 from openpyxl import Workbook, load_workbook
 
 from facturation import pcf_format as fmt
+from tests.conftest import creer_master
 
 pytestmark = pytest.mark.unit
 
@@ -665,3 +666,189 @@ def test_t_fac_12d_refus_de_controler_spec_et_de_generer(racine_fictive, capsys)
     with pytest.raises(facture.EcritureRefusee, match="existe déjà"):
         facture.generer(spec)
     assert _instantane(classeur.parent) == avant, "le classeur existant a été réécrit malgré le refus"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Constats de revue : ecrire_onglet et verifier_onglet se gardent eux-mêmes
+# ──────────────────────────────────────────────────────────────────────
+#
+# `generer` contrôle l'onglet, le numéro et l'entité avant d'appeler `ecrire_onglet`, et n'enregistre rien
+# après une exception : aucun des cas ci-dessous ne l'atteint. Mais l'émission (F-17) appellera
+# `ecrire_onglet` et `verifier_onglet` directement, avec `entite=…`, sur le classeur d'une école qui porte
+# déjà d'autres factures : un contrôle oublié par l'appelant ne doit ni réutiliser un numéro, ni mêler deux
+# entités, ni laisser dans le classeur une facture à moitié écrite qu'un enregistrement suivant garderait.
+
+ONGLET_EXISTANT = "R_ABC000 Août 2026"
+
+# Facture fictive de l'entité KAUR, sur le modèle de la spec minimale (même école fictive ABC).
+SPEC_KAUR = {
+    **SPEC_MINIMALE,
+    "entite": "KAUR",
+    "fichier_sortie": "KAUR/ABC/KAUR_ABC.xlsx",
+    "onglet": "K_ABC001 Sept 2026",
+    "n_facture": "K_ABC001",
+    "date_emission": "2026-09-30",
+}
+
+
+def _classeur_avec_une_facture() -> Workbook:
+    """Classeur d'école qui porte déjà une facture : onglet « R_ABC000 Août 2026 », N° R_ABC000 en D17."""
+    wb = _nouveau_classeur()
+    wb.create_sheet(ONGLET_EXISTANT)["D17"] = "R_ABC000"
+    return wb
+
+
+def _etat(wb: Workbook) -> tuple[list[str], list]:
+    """Onglets du classeur, dans l'ordre, et la cellule N° de facture (D17) de chacun."""
+    return list(wb.sheetnames), [wb[nom]["D17"].value for nom in wb.sheetnames]
+
+
+# (titre de l'onglet déjà présent, N° de sa cellule D17) : chacun interdit d'écrire R_ABC001 (FA-02).
+CAS_DEJA_PRESENTS = {
+    "meme-onglet": ("R_ABC001 Sept 2026", "R_ABC001"),
+    "onglet-a-la-casse-pres": ("r_abc001 sept 2026", None),
+    "numero-dans-la-cellule": ("Facture septembre", "R_ABC001"),
+    "numero-dans-le-titre": ("PAID R_ABC001 Sept 2026", None),
+}
+
+
+@pytest.mark.parametrize(("titre", "numero"), list(CAS_DEJA_PRESENTS.values()), ids=list(CAS_DEJA_PRESENTS))
+def test_t_fac_14a_ecrire_onglet_refuse_un_onglet_ou_un_numero_deja_present(racine_fictive, dest, titre, numero):
+    """T-FAC-14 — `ecrire_onglet` refuse par `EcritureRefusee`, sans toucher au classeur, d'écrire une facture
+    dont l'onglet existe déjà (y compris à la casse près : openpyxl créerait en silence « … 20261 ») ou dont le
+    numéro figure déjà dans un onglet (cellule N° ou titre) : les conflits de `conflits_ecriture`. Le message
+    nomme l'onglet en conflit. Défense en profondeur : `generer` refuse déjà ces cas avant l'aperçu."""
+    facture = _module()
+    spec = _spec()
+    wb = _classeur_avec_une_facture()
+    feuille = wb.create_sheet(titre)
+    if numero:
+        feuille["D17"] = numero
+    assert facture.conflits_ecriture(wb, spec["onglet"], spec["n_facture"], entite=ENTITE), "cas mal construit"
+    avant = _etat(wb)
+
+    with pytest.raises(facture.EcritureRefusee) as erreur:
+        facture.ecrire_onglet(wb, spec, dest, entite=ENTITE)
+
+    assert titre in str(erreur.value), erreur.value
+    assert _etat(wb) == avant, "ecrire_onglet a modifié le classeur malgré le conflit"
+
+
+def test_t_fac_14b_second_appel_sur_le_meme_classeur_refuse(racine_fictive, dest):
+    """T-FAC-14 — `ecrire_onglet` appelé deux fois avec la même spec sur le même classeur (une reprise, plusieurs
+    factures d'une même école) : le second appel lève `EcritureRefusee` qui nomme l'onglet, le classeur garde un
+    seul onglet à ce numéro, et la facture déjà écrite reste conforme."""
+    facture = _module()
+    spec = _spec()
+    wb = _classeur_avec_une_facture()
+    ws = facture.ecrire_onglet(wb, spec, dest, entite=ENTITE)
+    avant = _etat(wb)
+
+    with pytest.raises(facture.EcritureRefusee, match=re.escape(spec["onglet"])):
+        facture.ecrire_onglet(wb, spec, dest, entite=ENTITE)
+
+    assert _etat(wb) == avant and wb.sheetnames == [ONGLET_EXISTANT, spec["onglet"]], wb.sheetnames
+    assert facture.verifier_onglet(ws, spec, dest, entite=ENTITE) == []
+
+
+def test_t_fac_15_verifier_onglet_controle_le_titre_de_l_onglet(racine_fictive, dest):
+    """T-FAC-15 — `verifier_onglet` compare le titre de l'onglet à `spec["onglet"]` : l'onglet suffixé
+    « R_ABC001 Sept 20261 » (ce qu'openpyxl crée quand le titre est déjà pris) donne un seul écart, de clé
+    `onglet`, qui cite le titre attendu et le titre trouvé. Garde : le même onglet sous son titre est conforme."""
+    facture = _module()
+    spec = _spec()
+    ws = facture.ecrire_onglet(_nouveau_classeur(), spec, dest, entite=ENTITE)
+    assert facture.verifier_onglet(ws, spec, dest, entite=ENTITE) == []
+
+    ws.title = spec["onglet"] + "1"
+    ecarts = facture.verifier_onglet(ws, spec, dest, entite=ENTITE)
+
+    assert _cles(ecarts) == ["onglet"], ecarts
+    assert f"'{spec['onglet']}'" in ecarts[0] and f"'{spec['onglet']}1'" in ecarts[0], ecarts
+
+
+@pytest.mark.parametrize(("entite_spec", "entite_appel"), [("ROSARI", "KAUR"), ("KAUR", "ROSARI")])
+def test_t_fac_16_entite_de_l_appel_differente_de_celle_de_la_spec(racine_fictive, entite_spec, entite_appel):
+    """T-FAC-16 — les entités ne se mélangent jamais (ADR001, contrats §1.1) : `ecrire_onglet` et
+    `verifier_onglet` appelés avec une entité différente de `spec["entite"]` lèvent une `ValueError` qui nomme
+    les deux entités. `ecrire_onglet` ne touche pas au classeur ; sans ce refus, il écrirait l'émetteur et le
+    RIB de l'une sous le numéro de l'autre, et `verifier_onglet`, qui lit ses attendus dans le MASTER de
+    l'entité reçue, ne verrait rien. Garde : chaque onglet est conforme sous sa propre entité."""
+    facture = _module()
+    creer_master(racine_fictive, "KAUR")
+    fmt.set_data_root(racine_fictive)
+    spec = _spec() if entite_spec == ENTITE else copy.deepcopy(SPEC_KAUR)
+    dest = fmt.get_destinataire("ABC", entite=entite_spec)
+    wb = _classeur_avec_une_facture()
+    avant = _etat(wb)
+
+    with pytest.raises(ValueError) as erreur:
+        facture.ecrire_onglet(wb, spec, dest, entite=entite_appel)
+    assert entite_spec in str(erreur.value) and entite_appel in str(erreur.value), erreur.value
+    assert _etat(wb) == avant, "ecrire_onglet a écrit dans le classeur pour une autre entité"
+
+    ws = facture.ecrire_onglet(_nouveau_classeur(), spec, dest, entite=entite_spec)
+    assert facture.verifier_onglet(ws, spec, dest, entite=entite_spec) == []
+    with pytest.raises(ValueError) as erreur:
+        facture.verifier_onglet(ws, spec, dest, entite=entite_appel)
+    assert entite_spec in str(erreur.value) and entite_appel in str(erreur.value), erreur.value
+
+
+def _sans(*cles: str):
+    def modifier(spec: dict):
+        for cle in cles:
+            del spec[cle]
+    return modifier
+
+
+def _rien(*args) -> None:
+    return None
+
+
+def _master_sans_nda(racine: Path, monkeypatch) -> None:
+    creer_master(racine, nda=None)
+    fmt.set_data_root(racine)  # vide le cache du MASTER
+
+
+def _apply_rib_en_echec(racine: Path, monkeypatch) -> None:
+    def apply_rib(ws, **kwargs):
+        raise RuntimeError("IBAN absent de MASTER.Coordonnées (simulé)")
+
+    monkeypatch.setattr(fmt, "apply_rib", apply_rib)
+
+
+# (modification de la spec, préparation de la racine, erreurs admises, motif du message). Toutes, sauf la
+# dernière, surviennent après `clone_template` dans le code relu en revue ; l'échéance antérieure, déjà lue
+# avant la première écriture, sert de témoin.
+CAS_ERREUR_EN_COURS_D_ECRITURE = {
+    "spec-sans-n_facture": (_sans("n_facture"), _rien, (KeyError, ValueError), "n_facture"),
+    "spec-sans-ecole-ni-libelle": (_sans("ecole", "ecole_label"), _rien, (KeyError, ValueError), "ecole"),
+    "master-sans-nda": (_rien, _master_sans_nda, ValueError, "NDA"),
+    "apply-rib-en-echec": (_rien, _apply_rib_en_echec, RuntimeError, "IBAN"),
+    "echeance-anterieure": (_poser("echeance", "2026-09-29"), _rien, ValueError, "antérieure"),
+}
+
+
+@pytest.mark.parametrize(
+    ("modifier_spec", "preparer", "erreurs", "motif"),
+    list(CAS_ERREUR_EN_COURS_D_ECRITURE.values()),
+    ids=list(CAS_ERREUR_EN_COURS_D_ECRITURE),
+)
+def test_t_fac_17_erreur_en_cours_d_ecriture_classeur_intact(
+    racine_fictive, dest, monkeypatch, modifier_spec, preparer, erreurs, motif
+):
+    """T-FAC-17 — la docstring d'`ecrire_onglet` promet qu'une spec invalide lève son erreur sans toucher au
+    classeur. Toute erreur, de la spec (`n_facture` absent, ni `ecole` ni `ecole_label`) ou du MASTER (ligne
+    Info / NDA absente, RIB incomplet), laisse le classeur tel qu'il était : mêmes onglets, la facture déjà
+    présente intacte, aucun onglet à moitié écrit qu'un appelant qui attrape l'erreur enregistrerait ensuite."""
+    facture = _module()
+    spec = _spec()
+    modifier_spec(spec)
+    preparer(racine_fictive, monkeypatch)
+    wb = _classeur_avec_une_facture()
+    avant = _etat(wb)
+
+    with pytest.raises(erreurs, match=motif):
+        facture.ecrire_onglet(wb, spec, dest, entite=ENTITE)
+
+    assert _etat(wb) == avant, "ecrire_onglet a laissé un onglet à moitié écrit dans le classeur"
