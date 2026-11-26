@@ -21,6 +21,9 @@ dependencies = [
     "recurring-ical-events>=3.0",
     # Windows n'a pas de base de fuseaux horaires : zoneinfo s'appuie sur tzdata.
     "tzdata; sys_platform == 'win32'",
+    # Sans Pillow, openpyxl abandonne sans prévenir les images (logo) d'un classeur qu'il
+    # réenregistre (constat des classeurs d'école, contrats des vagues 3 à 5, § 17).
+    "Pillow>=10",
 ]
 
 [project.optional-dependencies]
@@ -30,7 +33,7 @@ dev = ["pytest>=8", "pytest-cov>=5"]
 facturation = "facturation.cli:main"
 
 [tool.setuptools]
-packages = ["facturation"]
+packages = ["facturation", "facturation.commandes"]
 
 [tool.setuptools.package-data]
 facturation = ["assets/*.xlsx"]

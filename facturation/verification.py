@@ -4,6 +4,12 @@
 problème bloquant (ERREUR) empêcherait de préparer les factures, un point
 d'ATTENTION ne bloque pas encore mais le deviendra à un lot suivant.
 
+Depuis P-0b, la vérification signale aussi en ATTENTION chaque onglet de suivi que l'outil
+n'a pas pu lire (`Master.suivi_invalide`) et chaque perte qu'un enregistrement du MASTER par
+l'outil entraînerait (`master.fidelite_aller_retour`, qui travaille sur une copie temporaire).
+`💡 [proposé — à valider]` Un MASTER que `lire_master` refuse (colonne obligatoire manquante…)
+est signalé en ATTENTION, pour ne pas changer le code de retour de cette commande.
+
 Rien n'est écrit : la vérification ne fait que lire.
 """
 
@@ -16,7 +22,7 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 
-from facturation import config
+from facturation import config, master
 from facturation import pcf_format as fmt
 from facturation.config import Profil
 
@@ -99,6 +105,7 @@ def _verifier_donnees(profil: Profil) -> list[Constat]:
     if absents_suivi:
         constats.append(Constat(ATTENTION, "MASTER", f"onglets de suivi absents : {', '.join(absents_suivi)}"))
     constats.append(Constat(OK, "MASTER", f"{profil.master.name} lisible, {len(onglets)} onglets"))
+    constats += _verifier_lecture_et_fidelite(profil)
 
     fmt.set_data_root(profil.racine)
     try:
@@ -139,6 +146,26 @@ def _verifier_donnees(profil: Profil) -> list[Constat]:
             ATTENTION, "Coordonnées",
             f"destinataires incomplets (factures bloquées) : {', '.join(partiels)}",
         ))
+    return constats
+
+
+def _verifier_lecture_et_fidelite(profil: Profil) -> list[Constat]:
+    """Onglets de suivi illisibles et pertes d'un enregistrement par l'outil : une ATTENTION chacun."""
+    constats: list[Constat] = []
+    try:
+        lu = master.lire_master(profil.master)
+    except (master.MasterInvalide, master.MasterVerrouille, OSError) as exc:
+        constats.append(Constat(ATTENTION, "MASTER", f"lecture par l'outil impossible : {exc}"))
+    else:
+        for onglet, message in lu.suivi_invalide.items():
+            constats.append(Constat(ATTENTION, "MASTER", f"onglet de suivi « {onglet} » ignoré : {message}"))
+    try:
+        pertes = master.fidelite_aller_retour(profil.master)
+    except (master.MasterInvalide, OSError) as exc:
+        constats.append(Constat(ATTENTION, "MASTER", f"contrôle de fidélité impossible : {exc}"))
+    else:
+        for perte in pertes:
+            constats.append(Constat(ATTENTION, "MASTER", f"un enregistrement par l'outil changerait le classeur : {perte}"))
     return constats
 
 
