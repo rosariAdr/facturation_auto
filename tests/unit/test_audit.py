@@ -1,6 +1,9 @@
-"""Audit agenda ↔ facturé (F-19, `facturation/audit.py` ; banque de tests : T-AUD-01 à T-AUD-09 et
-T-AUD-12 à T-AUD-32 ; T-AUD-10, T-AUD-11 et T-AUD-33 à T-AUD-43 — `lancer_audit` et la commande
-`facturation audit` — dans tests/integration/test_audit.py).
+"""Audit agenda ↔ facturé (F-19, `facturation/audit.py` ; banque de tests : T-AUD-01 à T-AUD-09,
+T-AUD-12 à T-AUD-32 et T-AUD-45 à T-AUD-59 ; T-AUD-10, T-AUD-11, T-AUD-33 à T-AUD-44 et T-AUD-60 —
+`lancer_audit` et la commande `facturation audit` — dans tests/integration/test_audit.py).
+
+T-AUD-45 à T-AUD-59 viennent de la revue de F-19 (constats des deux relecteurs), comme les cas
+ajoutés à T-AUD-21 (bornes exactes de la tolérance).
 
 Tests d'acceptation écrits avant l'implémentation : chaque test importe `facturation.audit` lui-même,
 pour que l'absence du module fasse échouer les tests sans bloquer la collecte des autres. Données
@@ -71,10 +74,12 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from facturation import fichiers
 from facturation.agenda import Seance
 from facturation.chemins import cle_seance
 from facturation.classement import SeanceClassee
 from facturation.master import ONGLETS_PREVUS, Master, lire_master
+from facturation.regles import RegleEcartee
 from facturation.sessions import LigneSessions
 from tests.conftest import creer_master
 
@@ -754,10 +759,13 @@ def test_t_aud_13_meme_jour_autres_heures_a_verifier(seance, ligne):
 
 @pytest.mark.parametrize(
     ("duree", "ecart"),
-    [(3.5, False), (3.504, False), (3.496, False), (3.51, True), (3.49, True), (3.0, True)],
+    [(3.5, False), (3.504, False), (3.496, False), (3.505, False), (3.495, False), (3.4949, True),
+     (3.5051, True), (3.51, True), (3.49, True), (3.0, True)],
 )
 def test_t_aud_21_ecart_d_heures_au_dela_d_un_demi_centieme(duree, ecart):
-    """T-AUD-21 — « écart d'heures » si |heures facturables recalculées − `Durée_h`| > 0,005, sinon rien."""
+    """T-AUD-21 — « écart d'heures » si |heures facturables recalculées − `Durée_h`| > 0,005, sinon rien.
+    Revue de F-19 : la borne exacte (0,005 pile, des deux côtés) ne donne pas d'écart ; un dix-millième
+    au-delà en donne un (garde d'un `>` devenu `>=`, ou d'une tolérance élargie)."""
     jour = date(2026, 9, 15)
     seance = _seance(jour, "09:00", "12:30", I_ABC)
     rapport = _auditer([seance], _master([_ses("ABC", jour, "09:00", "12:30", duree)]))
@@ -977,3 +985,287 @@ def test_t_aud_29_ecrire_rapport_txt_et_csv(tmp_path):
     assert len({txt, csv_, txt2, csv2}) == 4
     assert len(list(dossier.iterdir())) == 4
     assert txt.read_text(encoding="utf-8-sig").strip() == txt2.read_text(encoding="utf-8-sig").strip()
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Constats de la revue de F-19
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _lire_csv(chemin) -> list[list[str]]:
+    """Lignes du .csv écrit par `ecrire_rapport` (UTF-8 avec BOM, séparateur « ; »)."""
+    texte = chemin.read_bytes().decode("utf-8-sig")
+    return list(csv.reader(io.StringIO(texte, newline=""), delimiter=";"))
+
+
+def _cellule(lignes: list[list[str]], rang: int, colonne: str) -> str:
+    """Cellule d'une ligne du .csv, repérée par l'intitulé de sa colonne."""
+    return lignes[rang][lignes[0].index(colonne)]
+
+
+def test_t_aud_45_seance_facturee_deux_fois_par_des_lignes_sans_heure():
+    """T-AUD-45 — Revue de F-19 (constat haut) : une séance et deux lignes de `Sessions` du même jour,
+    sans Début ni Fin (forme courante de l'historique, § 15), sous deux N°. La séance est facturée deux
+    fois : un seul écart « doublon », qui porte les deux lignes ; jamais « tenue non facturée » (qui
+    pousserait à la facturer une troisième fois), ni « facturée absente ». Garde cassée : avec deux
+    séances ce jour-là, les deux lignes s'apparient une pour une, sans écart."""
+    jour = date(2026, 10, 6)
+    seance = _seance(jour, "09:00", "12:30", I_ABC)
+    sessions = [
+        _ses("ABC", jour, None, None, 3.5, n="R_ABC001", promotion="", module=""),
+        _ses("ABC", jour, None, None, 3.5, n="R_ABC002", promotion="", module=""),
+    ]
+    rapport = _auditer([seance], _master(sessions))
+    assert [e.nature for e in rapport.ecarts] == [DOUBLON], rapport.ecarts
+    assert sorted(ligne.rang for ligne in rapport.ecarts[0].lignes) == [2, 3]
+    assert _de_nature(rapport, TENUE_NON_FACTUREE) == [] and _de_nature(rapport, ABSENTE) == []
+
+    deux_seances = [seance, _seance(jour, "14:00", "17:30", I_ABC)]
+    assert list(_auditer(deux_seances, _master(sessions)).ecarts) == []
+
+
+def test_t_aud_46_raison_du_jour_sans_heure_sans_aucune_ligne_ni_aucune_seance():
+    """T-AUD-46 — Revue de F-19 : deux séances et une seule ligne sans heure le même jour. Les séances
+    restent seules (« tenue non facturée », avec la raison « 2 séance(s) pour 1 ligne(s) sans heure le
+    15/10 ») et la ligne aussi (« facturée absente »), mais aucun détail ne dit « aucune ligne » ni
+    « aucune séance de l'agenda » : la raison prouve le contraire, et le rapport se contredirait."""
+    jour = date(2026, 10, 15)
+    matin = _seance(jour, "09:00", "12:00", I_ABC)
+    apres_midi = _seance(jour, "14:00", "17:00", I_ABC)
+    sessions = [_ses("ABC", jour, None, None, 6.0, promotion="", module="")]
+    rapport = _auditer([matin, apres_midi], _master(sessions))
+    raison = "2 séance(s) pour 1 ligne(s) sans heure le 15/10"
+
+    non_facturees = _de_nature(rapport, TENUE_NON_FACTUREE)
+    assert {e.seance for e in non_facturees} == {matin, apres_midi}, rapport.ecarts
+    for ecart in non_facturees:
+        assert raison in ecart.detail, ecart.detail
+        assert "aucune ligne" not in ecart.detail, ecart.detail
+    absentes = _de_nature(rapport, ABSENTE)
+    assert [ligne.rang for e in absentes for ligne in e.lignes] == [2], rapport.ecarts
+    assert "aucune séance" not in absentes[0].detail, absentes[0].detail
+
+
+def test_t_aud_47_ligne_sans_heure_en_plus_d_une_ligne_exacte():
+    """T-AUD-47 — Revue de F-19 : une séance journalisée exactement (ligne 2), et une ligne 3 du même jour,
+    sans heure, sous un autre N°. La ligne 3 est une double facturation probable (`sessions.chercher` la
+    montre comme un doublon possible) : soit un « doublon » qui porte les lignes 2 et 3, soit un écart de
+    la ligne 3 qui cite la séance 09:00–12:30, jamais « aucune séance de l'agenda ». Garde cassée : sans
+    la ligne 3, aucun écart."""
+    jour = date(2026, 9, 15)
+    seance = _seance(jour, "09:00", "12:30", I_ABC)
+    sessions = [
+        _ses("ABC", jour, "09:00", "12:30", 3.5, n="R_ABC001"),
+        _ses("ABC", jour, None, None, 3.5, n="R_ABC002", promotion="", module=""),
+    ]
+    rapport = _auditer([seance], _master(sessions))
+    assert _de_nature(rapport, TENUE_NON_FACTUREE) == [], rapport.ecarts
+    doublons = [e for e in _de_nature(rapport, DOUBLON) if sorted(ligne.rang for ligne in e.lignes) == [2, 3]]
+    if not doublons:
+        (ecart_3,) = [e for e in rapport.ecarts if 3 in {ligne.rang for ligne in e.lignes}]
+        assert "aucune séance de l'agenda" not in ecart_3.detail, ecart_3.detail
+        assert re.search(r"09:00\s*[–-]\s*12:30", ecart_3.detail), ecart_3.detail
+
+    assert list(_auditer([seance], _master(sessions[:1])).ecarts) == []
+
+
+def test_t_aud_48_doublon_d_agenda_pour_une_seule_ligne():
+    """T-AUD-48 — Revue de F-19 : deux événements de l'agenda au même créneau (uid différents) et une seule
+    ligne de `Sessions`. Le créneau est déjà facturé : aucune « tenue non facturée » muette. Soit un
+    « doublon » (d'agenda), soit un détail qui dit « à vérifier » et cite la ligne 2. Garde cassée : un
+    seul événement, aucun écart."""
+    jour = date(2026, 9, 15)
+    s1 = _seance(jour, "09:00", "12:30", I_ABC, uid="a@exemple.invalid")
+    s2 = _seance(jour, "09:00", "12:30", I_ABC, uid="b@exemple.invalid")
+    sessions = [_ses("ABC", jour, "09:00", "12:30", 3.5)]
+    rapport = _auditer([s1, s2], _master(sessions))
+    assert rapport.ecarts, "le second événement du créneau doit être signalé"
+    for ecart in _de_nature(rapport, TENUE_NON_FACTUREE):
+        assert "à vérifier" in ecart.detail and re.search(r"\bligne 2\b", ecart.detail), ecart.detail
+    assert _de_nature(rapport, DOUBLON) or any(re.search(r"\bligne 2\b", e.detail) for e in rapport.ecarts)
+
+    assert list(_auditer([s1], _master(sessions)).ecarts) == []
+
+
+@pytest.mark.parametrize("cas", ["libelle-inconnu", "libelle-ambigu"])
+def test_t_aud_49_ecole_de_correspondances_inconnue_de_ecoles(cas):
+    """T-AUD-49 — Revue de F-19, § 15 (qui prime) : la colonne `École` de `Correspondances` accepte le code
+    ou le libellé de l'onglet `Écoles` ; un libellé inconnu de `Écoles`, ou porté par deux codes, donne
+    une `ValueError` qui nomme l'onglet `Correspondances`, la valeur et `Écoles`, au lieu d'un faux code
+    d'école (la séance déjà facturée sortait en « tenue non facturée »). Garde cassée : le libellé connu
+    « École Fictive A » est relié à ABC, sans écart."""
+    jour = date(2026, 9, 15)
+    seance = _seance(jour, "09:00", "12:30", I_ABC)
+    sessions = [_ses("ABC", jour, "09:00", "12:30", 3.5)]
+    autres = [c for c in CORRESPONDANCES if c["Clé"] != I_ABC]
+
+    def correspondances(ecole: str) -> list[dict]:
+        return [*autres, {**_corresp(I_ABC, "ABC", "Module A", "M1"), "École": ecole}]
+
+    connu = _auditer([seance], _master(sessions, correspondances=correspondances("École Fictive A")))
+    assert list(connu.ecarts) == []
+
+    if cas == "libelle-inconnu":
+        valeur, ecoles = "Ecole Inconnue Fictive", ECOLES
+    else:
+        valeur, ecoles = "École Fictive A", [*ECOLES, {"École": "École Fictive A", "Code facturation": "ABX"}]
+    with pytest.raises(ValueError) as erreur:
+        _auditer([seance], _master(sessions, correspondances=correspondances(valeur), ecoles=ecoles))
+    message = str(erreur.value)
+    assert "Correspondances" in message and valeur in message and "Écoles" in message, message
+
+
+def test_t_aud_50_ecole_hors_facturation_dont_la_regle_est_illisible():
+    """T-AUD-50 — Revue de F-19 : une école `Hors facturation` dont la ligne de `Règles_facturation` porte
+    une valeur illisible (écartée par `regles_par_ecole`, avertissement `RegleEcartee`) reste hors
+    facturation : aucun écart, école non auditée, séance listée dans `hors_facturation`, code 0. Garde
+    cassée : la même école au Lot 1 est auditée (T-AUD-06)."""
+    regles = [r for r in REGLES if r["École"] != "HFX"] + [{**_regle("HFX", "Hors facturation"),
+                                                           "Rythme": "trimestriel fictif"}]
+    seance = _seance(date(2026, 9, 15), "09:00", "12:00", I_HFX)
+    with pytest.warns(RegleEcartee):
+        rapport = _auditer([seance], _master([], regles=regles))
+    assert list(rapport.ecarts) == [], rapport.ecarts
+    assert "HFX" not in rapport.ecoles
+    assert [classee.seance for classee in rapport.hors_facturation] == [seance]
+    assert rapport.code_retour == 0
+
+
+def test_t_aud_51_maintenant_sans_fuseau_refuse():
+    """T-AUD-51 — Revue de F-19, § 1.2 : `maintenant` porte un fuseau. Un moment sans fuseau donne une
+    `ValueError` qui le dit, jamais une `TypeError` brute de comparaison."""
+    seance = _seance(date(2026, 9, 15), "09:00", "12:30", I_ABC)
+    with pytest.raises(ValueError, match="fuseau"):
+        _auditer([seance], _master([]), maintenant=datetime(2026, 11, 26, 16, 0))
+
+
+def test_t_aud_52_sans_ecart_avec_un_libelle():
+    """T-AUD-52 — Revue de F-19 : `sans_ecart` ne répond jamais « sans écart » à tort. Désignée par son
+    libellé (« École Fictive A »), une école qui a un écart donne False, ou une `ValueError` explicite ;
+    jamais True."""
+    rapport = _auditer([_seance(date(2026, 9, 15), "09:00", "12:30", I_ABC)], _master([]))
+    assert rapport.sans_ecart("ABC") is False
+    try:
+        reponse = rapport.sans_ecart("École Fictive A")
+    except ValueError:
+        return
+    assert reponse is False
+
+
+I_URL = "Cours visio https://visio.exemple.invalid/salle-1"
+
+
+def test_t_aud_53_csv_adresse_dans_un_intitule_masquee_cellule_par_cellule(tmp_path):
+    """T-AUD-53 — Revue de F-19, § 1.6 : une adresse dans l'intitulé d'une séance est masquée dans le .csv
+    sans casser ses colonnes. Chaque ligne garde ses 12 cellules ; heures et N° restent à leur place ;
+    « <adresse masquée> » est dans la cellule de l'intitulé ; « https:// » n'apparaît ni dans le .csv
+    ni dans le .txt. (Le masquage du CSV entier avalait les séparateurs « ; » jusqu'au premier blanc.)"""
+    aud = _aud()
+    jour = date(2026, 9, 15)
+    seance = _seance(jour, "09:00", "12:30", I_URL)
+    correspondances = [*CORRESPONDANCES, _corresp(I_URL, "ABC", "Module A", "M1")]
+    sessions = [_ses("ABC", jour, "14:00", "17:00", 3.0)]
+    rapport = _auditer([seance], _master(sessions, correspondances=correspondances))
+    assert [(e.nature, e.heures_agenda, e.heures_facturees) for e in rapport.ecarts] == [(ECART_HEURES, 3.5, 3.0)]
+
+    txt, csv_ = aud.ecrire_rapport(rapport, tmp_path / "audits")
+    lignes = _lire_csv(csv_)
+    assert len(lignes) == 2, lignes
+    assert all(len(ligne) == len(lignes[0]) == 12 for ligne in lignes), lignes
+    assert _cellule(lignes, 1, "Heures agenda") == "3,5"
+    assert _cellule(lignes, 1, "Heures facturées") == "3"
+    assert _cellule(lignes, 1, "N° facture") == "R_ABC001"
+    assert _cellule(lignes, 1, "Lignes Sessions") == "2"
+    assert fichiers.ADRESSE_MASQUEE in _cellule(lignes, 1, "Intitulé (agenda)")
+    assert "https://" not in csv_.read_text(encoding="utf-8-sig")
+    assert "https://" not in txt.read_text(encoding="utf-8-sig")
+
+
+def test_t_aud_54_texte_du_rapport_masque_les_adresses():
+    """T-AUD-54 — Revue de F-19, § 1.6 (garde du masquage du texte) : l'intitulé d'une séance qui contient
+    une adresse apparaît dans le texte du rapport avec « <adresse masquée> », jamais « https:// »."""
+    correspondances = [*CORRESPONDANCES, _corresp(I_URL, "ABC", "Module A", "M1")]
+    seance = _seance(date(2026, 9, 15), "09:00", "12:30", I_URL)
+    rapport = _auditer([seance], _master([], correspondances=correspondances))
+    assert [e.nature for e in rapport.ecarts] == [TENUE_NON_FACTUREE]
+    texte = _aud().rapport_texte(rapport)
+    assert "Cours visio" in texte and fichiers.ADRESSE_MASQUEE in texte
+    assert "https://" not in texte
+
+
+@pytest.mark.parametrize(
+    "intitule", ["=1+1 fictif", "\t=1+1 fictif", "\r=1+1 fictif"], ids=["egal", "tabulation", "retour-chariot"],
+)
+def test_t_aud_55_csv_neutralise_les_formules_de_l_intitule(tmp_path, intitule):
+    """T-AUD-55 — Revue de F-19 : une cellule de texte du .csv qui commence par un début de formule (=, ou
+    une tabulation ou un retour chariot devant, liste OWASP) est préfixée d'une apostrophe, pour qu'Excel
+    ne l'évalue jamais."""
+    aud = _aud()
+    seance = _seance(date(2026, 9, 15), "09:00", "12:30", intitule)
+    correspondances = [*CORRESPONDANCES, _corresp(intitule.strip(), "ABC", "Module A", "M1")]
+    rapport = _auditer([seance], _master([], correspondances=correspondances))
+    assert [(e.nature, e.seance) for e in rapport.ecarts] == [(TENUE_NON_FACTUREE, seance)]
+    _, csv_ = aud.ecrire_rapport(rapport, tmp_path / "audits")
+    cellule = _cellule(_lire_csv(csv_), 1, "Intitulé (agenda)")
+    assert cellule.startswith("'") and "=1+1 fictif" in cellule, repr(cellule)
+
+
+def test_t_aud_56_csv_neutralise_l_identifiant_du_brouillon(tmp_path):
+    """T-AUD-56 — Revue de F-19 : l'identifiant d'un brouillon non émis (lu dans `preparation.json`) passe
+    lui aussi par la neutralisation des formules dans le .csv."""
+    aud = _aud()
+    seance = _seance(date(2026, 10, 13), "09:00", "12:30", I_ABC)
+    rapport = _auditer([seance], _master([]), brouillons=[_brouillon_fictif("=X fictif", [seance])])
+    assert [e.dans_brouillon for e in rapport.ecarts] == ["=X fictif"]
+    _, csv_ = aud.ecrire_rapport(rapport, tmp_path / "audits")
+    cellule = _cellule(_lire_csv(csv_), 1, "Brouillon non émis")
+    assert cellule.startswith("'") and "=X fictif" in cellule, repr(cellule)
+
+
+@pytest.mark.parametrize("exception", [OSError("disque plein (fictif)"), KeyboardInterrupt()],
+                         ids=["oserror", "interruption"])
+def test_t_aud_57_ecriture_interrompue_ne_laisse_aucun_fichier(tmp_path, monkeypatch, exception):
+    """T-AUD-57 — Revue de F-19 (garde du nettoyage) : si l'écriture du .csv échoue (disque plein, dossier
+    verrouillé, Ctrl+C), l'exception remonte et le dossier ne garde ni le .txt, ni le nom réservé."""
+    aud = _aud()
+    rapport = _rapport_varie()
+    vraie = fichiers.ecrire_texte_atomique
+
+    def ecriture(chemin, texte):
+        if str(chemin).endswith(".csv"):
+            raise exception
+        vraie(chemin, texte)
+
+    monkeypatch.setattr(fichiers, "ecrire_texte_atomique", ecriture)
+    dossier = tmp_path / "audits"
+    with pytest.raises(type(exception)):
+        aud.ecrire_rapport(rapport, dossier)
+    assert list(dossier.iterdir()) == []
+
+
+def test_t_aud_58_ecole_demandee_inconnue_ou_hors_facturation():
+    """T-AUD-58 — Revue de F-19 (gardes du filtre `ecoles`) : une école demandée inconnue (faute de frappe
+    « ABX ») lève une `ValueError`, jamais un audit vide « sans écart » ; une école demandée mais `Hors
+    facturation` n'est pas auditée, et le rapport le note en la nommant."""
+    with pytest.raises(ValueError, match="inconnue"):
+        _auditer([], _master([]), ecoles=["ABX"])
+
+    rapport = _auditer([], _master([]), ecoles=["HFX"])
+    assert list(rapport.ecarts) == [] and "HFX" not in rapport.ecoles
+    assert "HFX" in _aud().rapport_texte(rapport)
+
+
+def test_t_aud_59_volume_non_compare_quand_une_seance_est_incalculable():
+    """T-AUD-59 — Revue de F-19 (garde de l'écart de volume) : pour une école à bon de commande, un groupe
+    (école, promotion) dont une séance a des heures incalculables n'est pas comparé : « heures
+    incalculables » seulement, jamais un « écart de volume » faussé par la séance manquante."""
+    i_seminaire = "Séminaire fictif DEF"
+    correspondances = [*CORRESPONDANCES, _corresp(i_seminaire, "DEF", "Séminaire D", "M1", mode="coefficient")]
+    jours = (date(2026, 10, 6), date(2026, 10, 13))
+    seances = [_seance(jours[0], "09:00", "12:00", I_DEF), _seance(jours[1], "09:00", "17:00", i_seminaire)]
+    sessions = [
+        _ses("DEF", jours[0], "09:00", "12:00", 3.0, n="R_DEF001", module="Module D", periode="Octobre 2026"),
+        _ses("DEF", jours[1], "09:00", "17:00", 7.0, n="R_DEF001", module="Séminaire D", periode="Octobre 2026"),
+    ]
+    rapport = _auditer(seances, _master(sessions, correspondances=correspondances))
+    assert [(e.nature, e.seance) for e in rapport.ecarts] == [(INCALCULABLES, seances[1])], rapport.ecarts

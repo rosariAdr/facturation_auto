@@ -1,5 +1,6 @@
 """Audit agenda ↔ facturé de bout en bout : `lancer_audit` et la commande `facturation audit` (F-19 ;
-banque de tests : T-AUD-10, T-AUD-11 et T-AUD-33 à T-AUD-44 ; le reste dans tests/unit/test_audit.py).
+banque de tests : T-AUD-10, T-AUD-11, T-AUD-33 à T-AUD-44 et T-AUD-60 ; le reste dans
+tests/unit/test_audit.py). T-AUD-60 et le renfort de T-AUD-39 viennent de la revue de F-19.
 
 Tests d'acceptation écrits avant l'implémentation : chaque test importe `facturation.audit` lui-même,
 pour que l'absence du module fasse échouer les tests sans bloquer la collecte des autres. Racines de
@@ -37,8 +38,10 @@ Lectures retenues (`💡 [proposé — à valider]`) :
 
 from __future__ import annotations
 
+import csv
 import hashlib
 import importlib
+import io
 import json
 import os
 import re
@@ -454,7 +457,11 @@ def test_t_aud_38_commande_sans_ecart_code_0_et_filtre_ecoles(tmp_path):
 def test_t_aud_39_periode_par_defaut_du_premier_de_m_moins_3_a_hier(tmp_path):
     """T-AUD-39 — 💡 Sans `--mois` ni `--du`/`--au`, la période va du 1er du mois M−3 à hier (Q-I2) : les
     séances de ces deux jours sont auditées, celles d'avant ne le sont pas (garde cassée : `--mois`
-    du mois d'avant les signale)."""
+    du mois d'avant les signale).
+
+    Revue de F-19 : les séances des deux bornes sont cherchées parmi les écarts du .csv (nature et date),
+    et non dans le texte, dont l'en-tête « Période : du … au … » porte déjà ces deux dates (l'assertion
+    passait à vide : un agenda lu jusqu'à la veille de « au » laissait le test vert)."""
     aujourd_hui = date.today()
     hier = aujourd_hui - timedelta(days=1)
     du, _ = _mois_decale(aujourd_hui, 3)
@@ -472,7 +479,11 @@ def test_t_aud_39_periode_par_defaut_du_premier_de_m_moins_3_a_hier(tmp_path):
     (txt,) = _rapports(profil)
     assert _periode_du_nom(txt) == (du, hier)
     texte = txt.read_text(encoding="utf-8-sig")
-    assert f"{du:%d/%m/%Y}" in texte and f"{hier:%d/%m/%Y}" in texte
+    (csv_,) = _rapports(profil, "csv")
+    lignes = list(csv.reader(io.StringIO(csv_.read_bytes().decode("utf-8-sig"), newline=""), delimiter=";"))
+    nature, date_ecart = lignes[0].index("Nature"), lignes[0].index("Date")
+    ecarts = sorted((ligne[nature], ligne[date_ecart]) for ligne in lignes[1:])
+    assert ecarts == sorted([(TENUE_NON_FACTUREE, f"{du:%d/%m/%Y}"), (TENUE_NON_FACTUREE, f"{hier:%d/%m/%Y}")]), ecarts
     assert f"{veille:%d/%m/%Y}" not in texte and f"{plus_tot:%d/%m/%Y}" not in texte
 
     garde = _lancer(tmp_path, *base, "--mois", f"{plus_tot:%Y-%m}")
@@ -585,3 +596,23 @@ def test_t_aud_43_commande_periode_inversee_refusee(tmp_path):
     assert "invers" in sortie.lower() or (f"{dernier:%d/%m/%Y}" in sortie and f"{premier:%d/%m/%Y}" in sortie), sortie
     assert "Traceback" not in sortie
     assert _rapports(profil) == []
+
+
+def test_t_aud_60_commande_ecole_inconnue_code_1(tmp_path):
+    """T-AUD-60 — Revue de F-19 (garde du refus d'une école inconnue) : `--ecoles ABX` (faute de frappe)
+    rend le code 1 avec un message qui nomme « ABX », jamais le code 0 d'un audit vide « sans écart » ;
+    aucun rapport n'est écrit. Garde cassée : `--ecoles ABC` audite (code 3, une séance non facturée)."""
+    premier, _ = _mois_decale(date.today(), 2)
+    profil = _installer(tmp_path)
+    agenda = tmp_path / "agenda.ics"
+    agenda.write_bytes(_ics([(premier + timedelta(days=9), "09:00", "12:30", I_ABC)]))
+    base = ("--mois", f"{premier:%Y-%m}", "--fichier", str(agenda), "--profil", str(profil.chemin))
+
+    res = _lancer(tmp_path, *base, "--ecoles", "ABX")
+    sortie = res.stdout + res.stderr
+    assert res.returncode == 1, sortie
+    assert "ABX" in sortie and "Traceback" not in sortie
+    assert _rapports(profil) == []
+
+    abc = _lancer(tmp_path, *base, "--ecoles", "ABC")
+    assert abc.returncode == 3, abc.stdout + abc.stderr
