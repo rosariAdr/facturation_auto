@@ -389,9 +389,20 @@ MENTION_INDEMNITE = (
 LIBELLE_CONTRAT = "N° de contrat :"
 
 # Mise en page (F-18).
+# Police du gabarit, nommée sur toute police posée par le module : une police sans nom sort
+# dans la police par défaut de LibreOffice (Cambria sous Windows), pas en Calibri.
+POLICE = "Calibri"
 # Colonne des libellés C14 à C17 : « Bon de commande : », le plus long, tient en Calibri 18 pt gras
 # sans déborder sur sa valeur en D (largeur du gabarit : 19,57, qui le coupait).
 LARGEUR_COLONNE_LIBELLES = 29.0
+# Colonnes de marge A et B (8,86 et 8,71 dans le gabarit), vides : réduites d'autant que C est
+# élargie, pour que la largeur imprimée, donc l'échelle de toute la facture, reste celle du gabarit.
+LARGEUR_COLONNES_MARGE = 4.0
+# Corps des mentions du bas de facture (TVA, déclaration d'activité, escompte, pénalités,
+# indemnité) : 15 pt à l'échelle d'environ 0,44 d'une page ajustée en largeur, soit 6,6 pt
+# imprimés (10 pt dans le gabarit, 4,2 pt imprimés).
+CORPS_MENTIONS = 15
+HAUTEUR_LIGNE_VIDE_MENTIONS = 8.0  # ancienne ligne de l'astérisque, vidée
 # Papier A4, portrait : sans format déclaré, LibreOffice prend celui de la machine (Letter en
 # anglais américain), et la longueur d'une page changerait d'un poste à l'autre.
 PAPIER_A4 = 9
@@ -415,6 +426,11 @@ MIN_LIGNES_AVEC_TOTAL = 3
 # ──────────────────────────────────────────────────────────────────────
 # Helpers internes
 # ──────────────────────────────────────────────────────────────────────
+
+
+def _police(**attributs) -> Font:
+    """Police du module, toujours nommée (POLICE)."""
+    return Font(name=POLICE, **attributs)
 
 
 def _set_if_not_merged(ws: Worksheet, row: int, col: int, value):
@@ -633,19 +649,43 @@ def _largeur_texte_px(texte: str, taille: float, gras: bool) -> float:
 
 
 def _nb_lignes_de_texte(texte: str, *, taille: float, gras: bool, place_px: float) -> int:
-    """Nombre de lignes d'un texte renvoyé à la ligne mot par mot dans place_px pixels."""
+    """Nombre de lignes d'un texte renvoyé à la ligne mot par mot dans place_px pixels.
+
+    Chaque retour à la ligne du texte ouvre une nouvelle ligne.
+    """
     espace = _largeur_texte_px(" ", taille, gras)
-    lignes, courante = 1, 0.0
-    for mot in str(texte).split():
-        largeur = _largeur_texte_px(mot, taille, gras)
-        if courante and courante + espace + largeur > place_px:
-            lignes += 1
-            courante = 0.0
-        if largeur > place_px:  # mot plus long que la place : coupé sur plusieurs lignes
-            lignes += int(largeur // place_px)
-            largeur %= place_px
-        courante += (espace if courante else 0.0) + largeur
-    return lignes
+    total = 0
+    for paragraphe in str(texte).split("\n"):
+        lignes, courante = 1, 0.0
+        for mot in paragraphe.split():
+            largeur = _largeur_texte_px(mot, taille, gras)
+            if courante and courante + espace + largeur > place_px:
+                lignes += 1
+                courante = 0.0
+            if largeur > place_px:  # mot plus long que la place : coupé sur plusieurs lignes
+                lignes += int(largeur // place_px)
+                largeur %= place_px
+            courante += (espace if courante else 0.0) + largeur
+        total += lignes
+    return total
+
+
+def _rehausser_pour_le_texte(ws: Worksheet, rmin: int, rmax: int, cmin: int, cmax: int):
+    """Rehausse les lignes visibles de rmin à rmax si le texte de la cellule (rmin, cmin), renvoyé
+    à la ligne sur les colonnes cmin à cmax, n'y tient pas ; le surplus est réparti entre elles."""
+    cell = ws.cell(row=rmin, column=cmin)
+    if cell.value is None:
+        return
+    taille = cell.font.sz or 11
+    place = sum(_largeurs_colonnes_px(ws, cmax)[cmin - 1:cmax]) - 2 * _MARGE_CELLULE_PX
+    n_lignes = _nb_lignes_de_texte(str(cell.value), taille=taille, gras=bool(cell.font.b), place_px=place)
+    besoin = n_lignes * taille * _INTERLIGNE + 4
+    lignes = [r for r in range(rmin, rmax + 1) if _hauteur_ligne(ws, r) > 0]
+    hauteur = sum(_hauteur_ligne(ws, r) for r in lignes)
+    if lignes and hauteur < besoin:
+        surplus = (besoin - hauteur) / len(lignes)
+        for r in lignes:
+            ws.row_dimensions[r].height = _hauteur_ligne(ws, r) + surplus
 
 
 def _largeurs_colonnes_px(ws: Worksheet, derniere_col: int) -> list:
@@ -719,10 +759,16 @@ def _plan_de_pages(ws: Worksheet, layout: dict, decalage: int) -> list:
         sur_la_page.append(r)
         rempli += h
     if rempli + bas > capacite:
-        # Le bloc du bas ne tient pas sous la dernière page : il part sur une nouvelle page,
-        # avec les dernières lignes de cours pour ne pas laisser le total seul.
-        reportees = min(MIN_LIGNES_AVEC_TOTAL, len(sur_la_page) - 1)
-        sauts.append(sur_la_page[-1 - reportees])
+        sauts.append(sur_la_page[-1])  # le bloc du bas ne tient pas : il part sur une nouvelle page
+    if sauts:
+        # La dernière page garde au moins MIN_LIGNES_AVEC_TOTAL lignes de cours au-dessus du
+        # total : sinon, le dernier saut remonte d'autant, sans vider la page précédente.
+        rangs = [r for r, _ in lignes]
+        i = rangs.index(sauts[-1])
+        manque = MIN_LIGNES_AVEC_TOTAL - (len(rangs) - 1 - i)
+        if manque > 0:
+            precedent = rangs.index(sauts[-2]) if len(sauts) > 1 else -1
+            sauts[-1] = rangs[max(precedent + 1, i - manque)]
     return sauts
 
 
@@ -730,8 +776,12 @@ def _scinder_fusions(ws: Worksheet, layout: dict, saut: int, decalage: int):
     """Coupe au saut de page les fusions du tableau qui le chevauchent (école, promotion, libellé).
 
     Sans cela, le texte d'une fusion à cheval sur deux pages est tranché par le saut. Chaque
-    morceau reprend le texte et le style de la fusion d'origine, et le tableau est fermé par
-    un trait de part et d'autre du saut.
+    morceau reprend le texte et tout le style de la fusion d'origine, bordures comprises, et le
+    tableau est fermé par un trait de part et d'autre du saut.
+
+    La cellule d'ancrage du second morceau reçoit le style avant la fusion : openpyxl donne aux
+    cellules du bord d'une fusion les bordures de son ancrage, et une cellule recréée par le
+    défusionnement n'en a aucune (bord gauche du tableau et séparateurs perdus sous le saut).
     """
     cols = layout["cols_table"]
     cmin, cmax = cols["ecole"], cols["total"] + 1
@@ -742,13 +792,13 @@ def _scinder_fusions(ws: Worksheet, layout: dict, saut: int, decalage: int):
             continue
         haut, bas, gauche, droite = mr.min_row, mr.max_row, mr.min_col, mr.max_col
         ws.unmerge_cells(str(mr))
+        source, suite = ws.cell(row=haut, column=gauche), ws.cell(row=saut + 1, column=gauche)
+        suite._style = _copy(source._style)
+        suite.value = source.value
         ws.merge_cells(start_row=haut, start_column=gauche, end_row=saut, end_column=droite)
         ws.merge_cells(start_row=saut + 1, start_column=gauche, end_row=bas, end_column=droite)
-        source, suite = ws.cell(row=haut, column=gauche), ws.cell(row=saut + 1, column=gauche)
-        suite.value = source.value
-        suite.font = _copy(source.font)
-        suite.alignment = _copy(source.alignment)
-        suite.number_format = source.number_format
+        _rehausser_pour_le_texte(ws, haut, saut, gauche, droite)
+        _rehausser_pour_le_texte(ws, saut + 1, bas, gauche, droite)
     for c in range(cmin, cmax + 1):
         _modifier_bordure(ws.cell(row=saut, column=c), bottom=THIN)
         _modifier_bordure(ws.cell(row=saut + 1, column=c), top=THIN)
@@ -779,6 +829,13 @@ def _aligner_cadre_sur_la_zone_imprimee(ws: Worksheet, layout: dict, decalage: i
         ws.cell(row=r, column=col_hors_zone).border = Border()
     for c in range(2, col_hors_zone + 1):
         _modifier_bordure(ws.cell(row=derniere, column=c), bottom=None)
+
+
+# Clés du relevé situées sous le tableau, donc décalées au-delà de 60 séances.
+_CLES_DU_BAS = (
+    "total_formule", "iban", "bic", "echeance", "nda", "total_libelle", "net_a_payer_libelle",
+    "net_a_payer_formule", "tva", "escompte", "penalites", "indemnite",
+)
 
 
 def _releve(ws: Worksheet, layout: dict, decalage: int) -> dict:
@@ -904,7 +961,7 @@ def apply_emetteur(ws: Worksheet, *, entite: str):
         cell = ws.cell(row=r, column=col)
         if not isinstance(cell, MergedCell):
             if i == 0:
-                cell.font = Font(bold=True, size=12)
+                cell.font = _police(bold=True, size=12)
             # Réduire pour ajuster : une ligne longue reste entière dans l'encadré (F-18).
             cell.alignment = Alignment(horizontal="center", vertical="center", shrink_to_fit=True)
 
@@ -978,7 +1035,7 @@ def apply_destinataire(
         r = rmin + i
         cell = ws.cell(row=r, column=col)
         cell.value = valeur
-        cell.font = Font(bold=True, size=12) if i == 0 else Font(size=11)
+        cell.font = _police(bold=True, size=12) if i == 0 else _police(size=11)
         # Rien n'est coupé (F-18) : une ligne d'adresse longue est réduite pour tenir ; la
         # dénomination juridique, souvent longue, passe à la ligne sans perdre son corps, et
         # sa ligne est rehaussée d'autant.
@@ -1020,9 +1077,14 @@ def apply_metadata(
 
     _set_if_not_merged(ws, layout["bandeau_row"], 2, _titre_facture(date_emission))
 
-    # Les libellés C14 à C17 tiennent entiers dans leur colonne, sans déborder sur la valeur (F-18).
-    dim = ws.column_dimensions[get_column_letter(layout["bon_commande_label_col"])]
+    # Les libellés C14 à C17 tiennent entiers dans leur colonne, sans déborder sur la valeur ; les
+    # colonnes de marge, à gauche, rendent la largeur gagnée par C (F-18).
+    label_col = layout["bon_commande_label_col"]
+    dim = ws.column_dimensions[get_column_letter(label_col)]
     dim.width = max(dim.width or 0, LARGEUR_COLONNE_LIBELLES)
+    for col in range(1, label_col):
+        dim = ws.column_dimensions[get_column_letter(col)]
+        dim.width = min(dim.width or LARGEUR_COLONNES_MARGE, LARGEUR_COLONNES_MARGE)
 
     ws[layout["siret_label_cell"]] = "N° SIRET :"
     ws[layout["siret_cell"]] = siret
@@ -1192,19 +1254,19 @@ def place_sessions(
         cd = ws.cell(row=r, column=cols["date"])
         cd.value = d
         cd.number_format = "DD/MM/YYYY"
-        cd.font = Font(size=14)
+        cd.font = _police(size=14)
         cd.alignment = Alignment(horizontal="center", vertical="center")
 
         # Heures col M (mergée M:N)
         ch = ws.cell(row=r, column=cols["heures"])
         ch.value = heures
-        ch.font = Font(size=14)
+        ch.font = _police(size=14)
         ch.alignment = Alignment(horizontal="center", vertical="center")
 
         # Taux col O (mergée O:P)
         ct = ws.cell(row=r, column=cols["taux"])
         ct.value = taux
-        ct.font = Font(size=14)
+        ct.font = _police(size=14)
         ct.alignment = Alignment(horizontal="center", vertical="center")
 
         # Total col Q (mergée Q:R) — formule
@@ -1212,7 +1274,7 @@ def place_sessions(
         col_heures_letter = chr(64 + cols["heures"])
         cq = ws.cell(row=r, column=cols["total"])
         cq.value = f"={col_taux_letter}{r}*{col_heures_letter}{r}"
-        cq.font = Font(size=14)
+        cq.font = _police(size=14)
         cq.alignment = Alignment(horizontal="center", vertical="center")
 
     for r in range(first_row, last_row + 1):
@@ -1223,7 +1285,7 @@ def place_sessions(
     if n_sessions > 0:
         ce = ws.cell(row=first_row, column=cols["ecole"])
         ce.value = ecole_name
-        ce.font = Font(bold=True, size=18)
+        ce.font = _police(bold=True, size=18)
         ce.alignment = Alignment(
             horizontal="center", vertical="center", wrap_text=True
         )
@@ -1252,7 +1314,7 @@ def place_sessions(
             )
         cell = ws.cell(row=ps, column=cols["promo"])
         cell.value = promo
-        cell.font = Font(size=16)
+        cell.font = _police(size=16)
         cell.alignment = Alignment(
             horizontal="center", vertical="center", wrap_text=True
         )
@@ -1277,7 +1339,7 @@ def place_sessions(
             )
         cell = ws.cell(row=ls, column=cols["libelle"])
         cell.value = libelle
-        cell.font = Font(size=14)
+        cell.font = _police(size=14)
         cell.alignment = Alignment(
             horizontal="center", vertical="center", wrap_text=True
         )
@@ -1287,8 +1349,23 @@ def place_sessions(
         ws.row_dimensions[r].hidden = True
 
     if masquer_jour:
+        # La largeur des colonnes Jour passe au libellé : le tableau garde sa largeur, donc la
+        # facture son échelle d'impression et sa pagination (F-18).
+        largeurs = _largeurs_colonnes_px(ws, cols["date"] + 1)
+        liberee = largeurs[cols["date"] - 1] + largeurs[cols["date"]]
+        dim = ws.column_dimensions[get_column_letter(cols["libelle"] + 3)]
+        dim.width = (dim.width or 0) + liberee / _PX_PAR_UNITE_DE_LARGEUR
         for c in (cols["date"], cols["date"] + 1):
             ws.column_dimensions[get_column_letter(c)].hidden = True
+
+    # Rien n'est coupé (F-18) : un libellé, une promotion ou un nom d'école trop long pour les
+    # lignes de son groupe les rehausse.
+    if n_sessions > 0:
+        groupes_fusionnes = [(first_row, last_session_row, cols["ecole"], cols["ecole"] + 1)]
+        groupes_fusionnes += [(ps, pe, cols["promo"], cols["promo"] + 1) for _, ps, pe in promo_ranges]
+        groupes_fusionnes += [(ls, le, cols["libelle"], cols["libelle"] + 3) for _, ls, le in libelle_subranges]
+        for rmin, rmax, cmin, cmax in groupes_fusionnes:
+            _rehausser_pour_le_texte(ws, rmin, rmax, cmin, cmax)
 
 
 def apply_mentions(
@@ -1339,27 +1416,39 @@ def apply_mentions(
     ws.cell(row=net, column=col).value = MENTION_NET_A_PAYER
     ws.cell(row=net, column=col + 2).value = f"={get_column_letter(cols['total'])}{total_row}"
 
-    ws.cell(row=ligne("ancienne_asterisque_row"), column=col).value = None
+    vide = ligne("ancienne_asterisque_row")
+    ws.cell(row=vide, column=col).value = None
+    ws.row_dimensions[vide].height = HAUTEUR_LIGNE_VIDE_MENTIONS
 
-    # (ligne, texte, dernière colonne fusionnée ou None, ligne dont la cellule C donne la police).
-    # Le NDA n'est pas fusionné : un texte officiel long déborde jusqu'au bord de la zone d'impression.
-    for cle, texte, col_fin, modele in (
-        ("tva_row", MENTION_TVA, longue, "tva_row"),
-        ("nda_row", nda, None, "tva_row"),
-        ("echeance_row", texte_echeance, courte, "echeance_row"),
-        ("escompte_row", MENTION_ESCOMPTE, courte, "escompte_row"),
-        ("penalites_row", MENTION_PENALITES, longue, "penalites_row"),
-        ("indemnite_row", MENTION_INDEMNITE, longue, "penalites_row"),
+    # L'échéance garde la police du gabarit (18 pt gras).
+    r = ligne("echeance_row")
+    _fusionner_ligne(ws, r, col, courte)
+    ws.cell(row=r, column=col).value = texte_echeance
+
+    # Les autres mentions s'impriment en CORPS_MENTIONS (F-18) ; chaque ligne prend la hauteur de
+    # son texte, renvoyé à la ligne s'il ne tient pas sur une seule. Le NDA n'est pas fusionné :
+    # un texte officiel déborde jusqu'au bord de la zone d'impression, et n'est fusionné sur toute
+    # la largeur, pour passer à la ligne, que s'il est plus long qu'elle.
+    bord_droit = cols["total"] + 1
+    largeurs = _largeurs_colonnes_px(ws, bord_droit)
+    for cle, texte, col_fin in (
+        ("tva_row", MENTION_TVA, longue),
+        ("nda_row", nda, None),
+        ("escompte_row", MENTION_ESCOMPTE, courte),
+        ("penalites_row", MENTION_PENALITES, longue),
+        ("indemnite_row", MENTION_INDEMNITE, longue),
     ):
         r = ligne(cle)
-        if col_fin is not None:
-            _fusionner_ligne(ws, r, col, col_fin)
+        fin = col_fin or bord_droit
+        place = sum(largeurs[col - 1:fin]) - 2 * _MARGE_CELLULE_PX
+        n_lignes = _nb_lignes_de_texte(texte, taille=CORPS_MENTIONS, gras=False, place_px=place)
+        if col_fin is not None or n_lignes > 1:
+            _fusionner_ligne(ws, r, col, fin)
         cell = ws.cell(row=r, column=col)
         cell.value = texte
-        if modele != cle:
-            source = ws.cell(row=ligne(modele), column=col)
-            cell.font = _copy(source.font)
-            cell.alignment = _copy(source.alignment)
+        cell.font = _police(size=CORPS_MENTIONS)
+        cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=n_lignes > 1)
+        ws.row_dimensions[r].height = n_lignes * CORPS_MENTIONS * _INTERLIGNE + 2
 
     _zone_impression(ws, layout)
 
@@ -1426,7 +1515,9 @@ def post_mortem(ws: Worksheet, *, entite: str) -> dict:
     """Retourne les cellules clés pour vérification après écriture.
 
     Au-delà de 60 séances, le bas de facture est relu aux lignes décalées : le décalage est
-    celui de la formule du total (voir `_decalage`).
+    celui de la formule du total (voir `_decalage`). Si cette formule est introuvable, le bas
+    de facture ne peut pas être situé : ses clés valent None, sans lever d'erreur, et
+    verifier_facture signale l'écart.
 
     Args:
         ws: worksheet à inspecter.
@@ -1440,7 +1531,11 @@ def post_mortem(ws: Worksheet, *, entite: str) -> dict:
                     net_a_payer_formule, tva, escompte, penalites, indemnite.
     """
     layout = _layout_for(entite)
-    return _releve(ws, layout, _decalage(ws, layout))
+    try:
+        return _releve(ws, layout, _decalage(ws, layout))
+    except RuntimeError:  # formule du total introuvable
+        releve = _releve(ws, layout, 0)
+        return {cle: None if cle in _CLES_DU_BAS else valeur for cle, valeur in releve.items()}
 
 
 def verifier_facture(
