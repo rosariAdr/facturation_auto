@@ -11,8 +11,9 @@ Règles (ADR029) :
 - les codes école existants sont conservés quelle que soit leur longueur ; une
   nouvelle école reçoit un code de 3 lettres.
 
-La variante historique avec un tiret bas (`R_ABC_007`) compte pour trouver le plus
-grand numéro, mais le numéro proposé est toujours au format courant (`R_ABC008`).
+La variante historique avec un tiret bas (`R_ABC_007`) et les numéros saisis en
+minuscules (`r_abc005`) comptent pour trouver le plus grand numéro, mais le numéro
+proposé est toujours au format courant, en majuscules (`R_ABC008`).
 
 Ce module ne fait que lire : il n'attribue ni n'écrit aucun numéro.
 """
@@ -20,6 +21,7 @@ Ce module ne fait que lire : il n'attribue ni n'écrit aucun numéro.
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -28,8 +30,9 @@ from openpyxl import load_workbook
 # Dernier numéro possible d'une série : la séquence tient sur 3 chiffres (ADR002).
 NUMERO_MAX = 999
 
-# Code école existant : majuscules et chiffres, longueur libre (ADR029).
-_CODE_RE = re.compile(r"[A-Z0-9]+")
+# Code école existant : une majuscule, puis majuscules et chiffres, longueur libre (ADR029).
+# Il commence par une lettre : `R_123001` se lirait comme un préfixe suivi de chiffres.
+_CODE_RE = re.compile(r"[A-Z][A-Z0-9]*")
 # Code d'une nouvelle école : exactement 3 lettres (ADR029).
 _CODE_NOUVEAU_RE = re.compile(r"[A-Z]{3}")
 # Préfixe d'entité : même règle que `prefixe_facture` dans le profil (1 à 3 majuscules + « _ »).
@@ -49,13 +52,14 @@ def valider_code_ecole(code: str, *, nouveau: bool = False) -> str:
             exactement 3 lettres (ADR029).
 
     Raises:
-        ValueError: code vide ou contenant autre chose que des majuscules et des
-            chiffres ; avec `nouveau=True`, code qui n'est pas fait de 3 lettres.
+        ValueError: code vide, qui ne commence pas par une lettre ou qui contient
+            autre chose que des majuscules et des chiffres ; avec `nouveau=True`,
+            code qui n'est pas fait de 3 lettres.
     """
     if not isinstance(code, str) or not _CODE_RE.fullmatch(code):
         raise ValueError(
-            f"Code école invalide : {code!r}. Attendu : majuscules et chiffres, "
-            "sans espace ni tiret (ex. ABC)."
+            f"Code école invalide : {code!r}. Attendu : une majuscule, puis majuscules et "
+            "chiffres, sans espace ni tiret (ex. ABC, EC2)."
         )
     if nouveau and not _CODE_NOUVEAU_RE.fullmatch(code):
         raise ValueError(
@@ -77,12 +81,14 @@ def _valider_prefixe(prefixe: str) -> str:
 def _rangs(numeros: Iterable, prefixe: str, code_ecole: str) -> set[int]:
     """Rangs (partie NNN) des numéros de la série `prefixe` + `code_ecole`.
 
-    Les numéros d'autres écoles ou d'autres préfixes, les valeurs qui ne sont pas
-    du texte et les numéros mal formés sont ignorés.
+    La casse ne compte pas : `r_abc005` appartient à la série `R_ABC` (sinon un
+    numéro saisi en minuscules ferait proposer un numéro déjà attribué). Les
+    numéros d'autres écoles ou d'autres préfixes, les valeurs qui ne sont pas du
+    texte et les numéros mal formés sont ignorés.
     """
     _valider_prefixe(prefixe)
     valider_code_ecole(code_ecole)
-    motif = re.compile(rf"{re.escape(prefixe)}{re.escape(code_ecole)}_?(\d{{3}})")
+    motif = re.compile(rf"{re.escape(prefixe)}{re.escape(code_ecole)}_?(\d{{3}})", re.IGNORECASE)
     rangs = set()
     for numero in numeros:
         if not isinstance(numero, str):
@@ -146,6 +152,12 @@ def _texte(valeur) -> str | None:
     return texte or None
 
 
+def _nom(valeur) -> str | None:
+    """En-tête normalisé (NFC, comme dans `master.py`) : `É` composé ou décomposé se valent."""
+    texte = _texte(valeur)
+    return unicodedata.normalize("NFC", texte) if texte is not None else None
+
+
 def _lire_colonne(classeur, onglet: str, colonne: str, chemin: Path) -> list[str]:
     """Valeurs non vides d'une colonne, trouvée par son en-tête en première ligne."""
     ws = classeur[onglet]
@@ -153,12 +165,12 @@ def _lire_colonne(classeur, onglet: str, colonne: str, chemin: Path) -> list[str
     # ferait proposer un numéro déjà attribué.
     ws.reset_dimensions()
     entetes = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), ())
-    noms = [_texte(e) for e in entetes]
-    if colonne not in noms:
+    noms = [_nom(e) for e in entetes]
+    if _nom(colonne) not in noms:
         raise ValueError(
             f"MASTER {chemin.name} : colonne « {colonne} » introuvable dans l'onglet « {onglet} »."
         )
-    indice = noms.index(colonne) + 1
+    indice = noms.index(_nom(colonne)) + 1
     valeurs = []
     for (valeur,) in ws.iter_rows(min_row=2, min_col=indice, max_col=indice, values_only=True):
         texte = _texte(valeur)
