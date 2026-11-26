@@ -1,6 +1,6 @@
 """Scripts et commande `facturation` sur données fictives.
 
-Banque de tests : T-CLI-01 à T-CLI-09, T-COH-01, T-VER-01 à T-VER-04, T-CFG-02, T-CFG-03.
+Banque de tests : T-CLI-01 à T-CLI-09, T-COH-01, T-VER-01 à T-VER-06, T-CFG-02, T-CLI-11, T-CFG-03.
 T-CLI-03 à 09 et T-VER-03, 04 : mentions légales et échéance (F-24, ADR030).
 """
 
@@ -340,3 +340,92 @@ def test_t_ver_04_verifier_signale_l_emetteur_sans_ei(tmp_path):
     res = _lancer("-m", "facturation", "profil", "verifier", "--profil", str(profil))
     assert res.returncode == 1, res.stdout + res.stderr
     assert any(re.search(MENTION_EI, ligne) for ligne in _erreurs(res.stdout)), res.stdout
+
+
+# ──────────────────────────────────────────────────────────────────────
+# F-10 — lecture de l'agenda (T-CLI-11)
+# ──────────────────────────────────────────────────────────────────────
+
+AGENDA_FICTIF = DEPOT / "tests" / "fixtures" / "agenda_fictif.ics"
+
+
+def test_t_cli_11_agenda_lire_un_fichier_local(tmp_path):
+    """T-CLI-11 — `facturation agenda lire --mois 2026-11 --fichier …` liste les séances de novembre du
+    .ics local (date, début–fin, durée, intitulé), sans profil ni accès réseau."""
+    sans_profil = {
+        "APPDATA": str(tmp_path / "appdata"), "XDG_CONFIG_HOME": str(tmp_path / "config"),
+        "FACTURATION_PROFIL": str(tmp_path / "aucun_profil.toml"),
+    }
+    res = _lancer("-m", "facturation", "agenda", "lire", "--mois", "2026-11", "--fichier", str(AGENDA_FICTIF),
+                  env_extra=sans_profil)
+    assert res.returncode == 0, res.stdout + res.stderr
+    lignes = res.stdout.splitlines()
+
+    def ligne_du(jour: str, debut: str) -> str:
+        """La ligne de la séance : sa date et son heure de début (un en-tête peut citer la date seule)."""
+        trouvees = [ligne for ligne in lignes if jour in ligne and debut in ligne]
+        assert len(trouvees) == 1, f"{jour} {debut} : {trouvees}\n{res.stdout}"
+        return trouvees[0]
+
+    for jour, debut, fin, intitule in (
+        ("05/11/2026", "14:00", "17:30", "#ABC-M1 Cours fictif - Module A (déplacé)"),
+        ("10/11/2026", "09:00", "12:30", "#ABC-M1 Cours fictif - Module A"),
+        ("13/11/2026", "00:30", "02:30", "#ECO-M2 Cours fictif noté en UTC"),
+        ("17/11/2026", "09:00", "12:30", "#ABC-M1 Cours fictif - Module A"),
+        ("24/11/2026", "09:00", "12:30", "#ABC-M1 Cours fictif - Module A"),
+        ("28/11/2026", "10:00", "13:30", "#ABC-M1 Cours fictif - Module A"),
+        ("30/11/2026", "20:00", "22:00", "#ABC-M1 Cours fictif du soir"),
+    ):
+        ligne = ligne_du(jour, debut)
+        assert fin in ligne and intitule in ligne, ligne
+    assert re.search(r"3[.,]5|3 ?h ?30", ligne_du("05/11/2026", "14:00")), "durée de 3 h 30 absente"
+    for absent in ("03/11/2026", "11/11/2026", "Jour férié fictif", "27/10/2026", "15/12/2026", "annulé"):
+        assert absent not in res.stdout, absent
+
+
+def test_t_ver_05_verifier_accepte_un_agenda_secret_avec_bom(tmp_path):
+    """T-VER-05 — `profil verifier` : un `agenda.secret` retouché au Bloc-notes ou sous PowerShell 5
+    (BOM UTF-8, fin de ligne Windows) n'est pas signalé comme invalide, et l'adresse ne s'affiche pas."""
+    jeton = "private-0123456789abcdef"
+    adresse = f"https://calendar.example.org/calendar/ical/personne%40example.org/{jeton}/basic.ics"
+    racine = tmp_path / "donnees"
+    creer_master(racine)
+    profil = tmp_path / "profil.toml"
+    profil.write_text(config.rediger("Personne A", "ROSARI", str(racine)), encoding="utf-8")
+    secret = config.enregistrer_adresse_ical(config.charger(profil), adresse)
+    secret.write_bytes(b"\xef\xbb\xbf" + adresse.encode("ascii") + b"\r\n")
+    res = _lancer("-m", "facturation", "profil", "verifier", "--profil", str(profil))
+    for fragment in (jeton, "calendar.example.org"):
+        assert fragment not in res.stdout + res.stderr, f"adresse affichée : {fragment}"
+    agenda = [ligne for ligne in res.stdout.splitlines() if "Agenda —" in ligne]
+    assert len(agenda) == 1 and agenda[0].startswith("[OK]"), res.stdout
+
+
+@pytest.mark.parametrize(
+    "contenu",
+    [
+        "https://calendar.example.org/calendar/ical/private-0123456789abcdef/basic.ics\r\n".encode("utf-16"),
+        b"\x00\xff\xfe\x81 calendar.example.org private-0123456789abcdef \x9d\x00",
+        b"https://calendar.example.org/calendar/ical/private-0123456789abcdef /basic.ics\n",
+    ],
+    ids=["utf-16", "binaire", "espace"],
+)
+def test_t_ver_06_verifier_signale_un_agenda_secret_inutilisable(tmp_path, contenu):
+    """T-VER-06 — `profil verifier` : un `agenda.secret` illisible (UTF-16, binaire) ou dont l'adresse contient
+    une espace donne une ERREUR claire qui nomme le fichier ; la commande ne plante pas et n'affiche pas l'adresse."""
+    racine = tmp_path / "donnees"
+    creer_master(racine)
+    profil = tmp_path / "profil.toml"
+    profil.write_text(config.rediger("Personne A", "ROSARI", str(racine)), encoding="utf-8")
+    secret = config.enregistrer_adresse_ical(
+        config.charger(profil), "https://calendar.example.org/calendar/ical/private-0123456789abcdef/basic.ics",
+    )
+    secret.write_bytes(contenu)
+    res = _lancer("-m", "facturation", "profil", "verifier", "--profil", str(profil))
+    assert "Traceback" not in res.stderr, res.stderr
+    for fragment in ("private-0123456789abcdef", "calendar.example.org"):
+        assert fragment not in res.stdout + res.stderr, f"adresse affichée : {fragment}"
+    agenda = [ligne for ligne in res.stdout.splitlines() if "Agenda —" in ligne]
+    assert len(agenda) == 1 and agenda[0].startswith("[ERREUR]"), res.stdout + res.stderr
+    assert "agenda.secret" in agenda[0], agenda[0]
+    assert res.returncode == 1, res.stdout + res.stderr

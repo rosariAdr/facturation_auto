@@ -16,6 +16,7 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 
+from facturation import config
 from facturation import pcf_format as fmt
 from facturation.config import Profil
 
@@ -166,12 +167,21 @@ def _verifier_agenda(profil: Profil) -> list[Constat]:
             f"fichier d'adresse iCal introuvable : {fichier.name} "
             "(déclaré dans le profil, [agenda] fichier_url_secrete)",
         )]
-    adresse = fichier.read_text(encoding="utf-8").strip()
-    # L'adresse est un secret : on ne l'affiche jamais, on contrôle seulement sa forme.
-    if not (adresse.startswith("https://") and adresse.endswith(".ics")):
+    try:
+        # utf-8-sig : un fichier retouché au Bloc-notes ou sous PowerShell 5 peut commencer par un BOM.
+        adresse = fichier.read_text(encoding="utf-8-sig").strip()
+    except (OSError, UnicodeDecodeError):
+        # Ni l'erreur d'origine ni le contenu : ils pourraient citer l'adresse.
         return [Constat(
-            ATTENTION, "Agenda",
-            f"le contenu de {fichier.name} ne ressemble pas à une adresse iCal (https://….ics)",
+            ERREUR, "Agenda",
+            f"{fichier.name} illisible (attendu : du texte UTF-8) : relancez `facturation profil agenda`",
+        )]
+    # L'adresse est un secret : on ne l'affiche jamais, on contrôle seulement sa forme.
+    if not config.adresse_ical_valide(adresse):
+        return [Constat(
+            ERREUR, "Agenda",
+            f"le contenu de {fichier.name} n'est pas une adresse iCal (https://….ics, sans espace) : "
+            "relancez `facturation profil agenda`",
         )]
     return [Constat(OK, "Agenda", f"adresse iCal secrète présente dans {fichier.name} (non affichée)")]
 
