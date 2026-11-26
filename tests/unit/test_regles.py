@@ -1,4 +1,4 @@
-"""Règles de facturation par école (F-14, ADR015, ADR026, ADR027, ADR030 ; banque de tests : T-REG-01 à T-REG-29).
+"""Règles de facturation par école (F-14, ADR015, ADR026, ADR027, ADR030 ; banque de tests : T-REG-01 à T-REG-44).
 
 Tests d'acceptation écrits avant l'implémentation : chaque test importe `facturation.regles`
 lui-même, pour que l'absence du module fasse échouer les tests sans bloquer la collecte des
@@ -20,14 +20,19 @@ Lectures retenues là où le contrat de la vague 2 ne tranche pas (`💡 [propos
 - oui/non : `oui`/`non` dans toute casse, ou un booléen Excel ; vide → False ; toute autre
   valeur → `ValueError` qui nomme la colonne, l'école et la valeur ;
 - `Début de cycle` est un jour du mois, lu comme entier (15, 15.0, "15") ; vide → None ;
-  un cycle sans début, ou avec un début hors de 1 à 28, lève `ValueError` (au chargement ou
-  au calcul de la période) ; les débuts 1 et 29 à 31 ne sont pas testés (voir le rapport) ;
+  un cycle sans début, ou avec un début hors de 2 à 28, lève `ValueError` (au chargement ou
+  au calcul de la période) ; les bornes 1 et 29 à 31 sont gardées par T-REG-34 ;
 - `Date limite d'envoi` reste un texte libre (« 15 à 12 h ») ;
 - les champs sans défaut dans le contrat (contrat, canal, pièces jointes, notes, statut,
   délai, date limite) valent "" ou None quand la cellule est vide ;
 - `ecoles_du_lot` reçoit le dictionnaire rendu par `regles_par_ecole` et compare le statut
   sans tenir compte de la casse ni des espaces ;
 - un mois hors de 1 à 12 lève `ValueError` dont le message dit « mois ».
+
+Constats de la revue de F-14 (T-REG-30 à T-REG-44) : les tests marqués `💡 [proposé — à valider]`
+fixent le minimum attendu sans choisir la forme de la correction. T-REG-31 est réservé aux écoles
+à plusieurs contrats : le contrat de la vague (« une école en double → ValueError ») contredit
+MASTER_SCHEMA, ADR030 §3 et le critère F-14 (« une facture par contrat ») ; Adrian tranche.
 """
 
 from __future__ import annotations
@@ -36,7 +41,7 @@ import calendar
 import dataclasses
 import importlib
 import re
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -372,7 +377,7 @@ def test_t_reg_15_periodes_successives_sans_trou_ni_chevauchement(valeurs):
 
 @pytest.mark.parametrize("debut_cycle", [None, "", 0, 32, "quinze"], ids=["None", "vide", "zero", "32", "texte"])
 def test_t_reg_16_cycle_sans_debut_valide_refuse(debut_cycle):
-    """T-REG-16 — un cycle sans début, ou au début hors de 1 à 28, lève `ValueError` qui nomme le
+    """T-REG-16 — un cycle sans début, ou au début hors de 2 à 28, lève `ValueError` qui nomme le
     début de cycle et l'école (au chargement ou au calcul de la période) : jamais de cycle deviné."""
     m = _module()
     with pytest.raises(ValueError) as erreur:
@@ -477,7 +482,7 @@ def test_t_reg_23_delai_illisible_refuse(delai):
 
 def test_t_reg_24_echeance_depuis_la_regle_lue():
     """T-REG-24 — l'échéance se calcule depuis le délai de la règle lue : vide → + 30 jours,
-    « 45 jours fin de mois » → fin du mois d'émission + 45 jours."""
+    « 45 jours fin de mois » → fin du mois de (émission + 45 jours), comme T-REG-21."""
     m = _module()
     regles = m.regles_par_ecole([_ligne("ABC"), _ligne("DEF", delai="45 jours fin de mois")])
     emission = date(2026, 12, 1)
@@ -614,3 +619,209 @@ def test_t_reg_29f_une_facture_par_contrat_quand_la_regle_le_demande():
     assert regles["ABC"].une_facture_par_contrat is True
     assert regles["ABC"].n_contrat == "CTR-FICTIF-001"
     assert regles["DEF"].une_facture_par_contrat is False
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Constats de la revue de F-14
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _issue(**valeurs) -> str:
+    """« acceptée » si la ligne se lit, « refusée » si sa lecture lève `ValueError`."""
+    try:
+        _regle(**valeurs)
+    except ValueError:
+        return "refusée"
+    return "acceptée"
+
+
+@pytest.mark.parametrize("statut", ["Lot1", "Lot 1 (pilote)", "Plus-tard", "Lot 1.", "Lot I"])
+def test_t_reg_30_statut_lot_hors_liste_refuse(statut):
+    """T-REG-30 — un `Statut lot` hors de la liste de MASTER_SCHEMA (`Lot 1`, `Plus tard`,
+    `Hors facturation`) est refusé dès la lecture : `ValueError` qui nomme la colonne, l'école et
+    la valeur. Sinon l'école sort du lot sans un mot, et ses séances ne sont jamais facturées.
+    La casse et les espaces restent tolérés (T-REG-25). Le sort d'un statut vide n'est pas fixé
+    ici : `💡 [proposé — à valider]`."""
+    with pytest.raises(ValueError) as erreur:
+        _regle(statut=statut)
+    message = str(erreur.value)
+    assert "Statut lot" in message
+    assert "ABC" in message
+    assert statut in message
+
+
+@pytest.mark.parametrize("statut", ["Hors facturation", "Plus tard"])
+def test_t_reg_32_erreur_d_une_ecole_hors_lot_ne_retient_pas_le_lot(statut):
+    """T-REG-32 — `💡 [proposé — à valider]` une valeur illisible sur la ligne d'une école
+    « Hors facturation » ou « Plus tard » ne retient pas les écoles du lot 1 (esprit d'ADR031 :
+    bloquée sans retenir les autres). La règle de l'école du lot reste utilisable. La forme du
+    signalement de l'école hors lot n'est pas fixée ici. Si l'école hors lot figure dans le
+    résultat, sa valeur illisible ne devient jamais une échéance devinée."""
+    m = _module()
+    regles = m.regles_par_ecole([
+        _ligne("XYZ", statut=statut, delai="à négocier"),
+        _ligne("ABC", statut="Lot 1"),
+    ])
+    assert m.ecoles_du_lot(regles) == ["ABC"]
+    assert m.periode_a_facturer(regles["ABC"], 2026, 11) == (date(2026, 11, 1), date(2026, 11, 30))
+    if "XYZ" in regles:
+        with pytest.raises(ValueError):
+            m.echeance_selon_regle(date(2026, 12, 1), regles["XYZ"].delai_paiement)
+
+
+def test_t_reg_33_delai_illisible_refuse_au_chargement():
+    """T-REG-33 — un délai de paiement illisible est refusé dès la lecture de la règle, par un
+    message qui nomme l'école, la colonne et la valeur (T-REG-23 ne teste que le calcul de
+    l'échéance, dont le message ne nomme pas l'école)."""
+    with pytest.raises(ValueError) as erreur:
+        _regle(delai="à réception")
+    message = str(erreur.value)
+    assert "ABC" in message
+    assert "Délai de paiement" in message
+    assert "à réception" in message
+
+
+@pytest.mark.parametrize("debut_cycle", [1, 29, 30, 31])
+def test_t_reg_34_debut_de_cycle_aux_bornes_refuse(debut_cycle):
+    """T-REG-34 — début de cycle 1 ou 29 à 31 : refusé au chargement comme au calcul de la période
+    (règle construite à la main), par un message qui nomme le début de cycle et l'école. Au 1er,
+    la facture de novembre couvrirait octobre ; de 29 à 31, le jour manque certains mois. Au 1er,
+    le message propose le rythme « mensuel »."""
+    m = _module()
+    with pytest.raises(ValueError) as au_chargement:
+        _regle(rythme="cycle", debut_cycle=debut_cycle)
+    with pytest.raises(ValueError) as au_calcul:
+        m.periode_a_facturer(m.RegleEcole("ABC", rythme="cycle", debut_cycle=debut_cycle), 2027, 3)
+    for erreur in (au_chargement, au_calcul):
+        message = str(erreur.value)
+        assert re.search(r"(?i)début de cycle", message)
+        assert "ABC" in message
+        if debut_cycle == 1:
+            assert "mensuel" in message
+
+
+@pytest.mark.parametrize(
+    "delai", ["3650000 jours", "99999999 jours", "99999999999 jours", "3650000 jours fin de mois"],
+)
+def test_t_reg_35_delai_demesure_refuse(delai):
+    """T-REG-35 — un délai qui mène hors du calendrier lève `ValueError` qui le cite, au calcul
+    de l'échéance (pas une `OverflowError` muette) et dès la lecture de la règle, avec le nom de
+    l'école. Le sort de « 0 jours » n'est pas fixé ici : `💡 [proposé — à valider]`."""
+    m = _module()
+    with pytest.raises(ValueError, match=re.escape(delai)):
+        m.echeance_selon_regle(date(2026, 12, 1), delai)
+    with pytest.raises(ValueError) as erreur:
+        _regle(delai=delai)
+    message = str(erreur.value)
+    assert "ABC" in message
+    assert "Délai de paiement" in message
+
+
+@pytest.mark.parametrize("vide", VIDES, ids=["None", "chaine-vide", "espaces"])
+def test_t_reg_36_une_facture_par_contrat_sans_numero_signalee(vide):
+    """T-REG-36 — `💡 [proposé — à valider]` « Une facture par contrat » à `oui` sans « N° de
+    contrat » : la règle se contredit (la facture ne porterait aucune référence de contrat,
+    ADR030 §3). Elle est refusée à la lecture (le message nomme la colonne et l'école), ou un
+    blocage le dit ; jamais acceptée sans remarque."""
+    m = _module()
+    try:
+        regle = _regle(par_contrat="oui", contrat=vide)
+    except ValueError as erreur:
+        message = str(erreur)
+        assert "N° de contrat" in message
+        assert "ABC" in message
+        return
+    raisons = m.blocages(regle, ref_bon_commande=None)
+    assert any("contrat" in raison.lower() for raison in raisons), raisons
+
+
+def test_t_reg_37_ligne_sans_ecole_retrouvable():
+    """T-REG-37 — une ligne remplie sans code école est refusée par un message qui permet de la
+    retrouver dans le MASTER : il cite son contenu ou l'école qui la précède. Le rang compté dans
+    la liste (« règle n° 2 ») n'est pas le numéro de ligne Excel : l'en-tête est décalé et
+    `lire_master` a retiré les lignes vides."""
+    with pytest.raises(ValueError, match="École") as erreur:
+        _module().regles_par_ecole([_ligne("ABC"), _ligne(None, notes="Note fictive Z9")])
+    message = str(erreur.value)
+    assert "Note fictive Z9" in message or "ABC" in message, message
+
+
+def test_t_reg_38_debut_de_cycle_decimal_refuse():
+    """T-REG-38 — un début de cycle décimal (15.5) est refusé, jamais tronqué en 15 : `ValueError`
+    qui nomme la colonne et la valeur."""
+    with pytest.raises(ValueError) as erreur:
+        _regle(rythme="cycle", debut_cycle=15.5)
+    message = str(erreur.value)
+    assert "Début de cycle" in message
+    assert "15.5" in message
+
+
+@pytest.mark.parametrize("nombre, texte", [(40, "quinze"), (-3, "-3")], ids=["40-et-quinze", "moins-3"])
+def test_t_reg_39_debut_de_cycle_hors_cycle_lu_de_facon_coherente(nombre, texte):
+    """T-REG-39 — `💡 [proposé — à valider]` hors du rythme `cycle`, « Début de cycle » est soit
+    contrôlé, soit ignoré, mais de la même façon pour un nombre et pour un texte : aujourd'hui 40
+    et -3 passent, alors que « quinze » et « -3 » saisis en texte bloquent la lecture."""
+    assert _issue(rythme="mensuel", debut_cycle=nombre) == _issue(rythme="mensuel", debut_cycle=texte)
+
+
+def test_t_reg_40a_lot_vide_ne_designe_aucune_ecole():
+    """T-REG-40a — un lot vide ne désigne aucune école, pas même celles au statut vide."""
+    m = _module()
+    assert m.ecoles_du_lot(m.regles_par_ecole([_ligne("MNO", statut=None)]), lot="") == []
+
+
+def test_t_reg_40b_ligne_entierement_vide_ignoree():
+    """T-REG-40b — une ligne entièrement vide est ignorée, comme le promet la docstring de
+    `regles_par_ecole` (fonction publique : l'appelant ne passe pas forcément par `lire_master`)."""
+    assert list(_module().regles_par_ecole([_ligne("ABC"), dict.fromkeys(COLONNES)])) == ["ABC"]
+
+
+@pytest.mark.parametrize("saisie", [12345.0, 12345], ids=["decimal", "entier"])
+def test_t_reg_41_numero_de_contrat_saisi_en_nombre(saisie):
+    """T-REG-41 — un n° de contrat saisi comme un nombre s'affiche sans « .0 »."""
+    assert _regle(contrat=saisie).n_contrat == "12345"
+
+
+def test_t_reg_42_colonne_du_schema_manquante_refusee():
+    """T-REG-42 — `💡 [proposé — à valider]` une colonne de MASTER_SCHEMA absente de la ligne
+    (ici mal orthographiée) est refusée par un message qui la nomme, au lieu de prendre sa valeur
+    par défaut : « Bon de commande requise » à la place de « Bon de commande requis » donnerait
+    « non requis », et la facture partirait sans bon de commande. Une colonne en plus reste
+    permise, comme dans `lire_master`."""
+    m = _module()
+    ligne = _ligne("ABC", statut="Lot 1")
+    del ligne["Bon de commande requis"]
+    ligne["Bon de commande requise"] = "oui"
+    with pytest.raises(ValueError, match="Bon de commande requis"):
+        m.regles_par_ecole([ligne])
+    assert list(m.regles_par_ecole([{**_ligne("ABC"), "Commentaire": "Note fictive"}])) == ["ABC"]
+
+
+@pytest.mark.parametrize("saisie", [datetime(2026, 11, 15), time(12, 0)], ids=["date", "heure"])
+def test_t_reg_43_date_limite_convertie_par_excel(saisie):
+    """T-REG-43 — une « Date limite d'envoi » qu'Excel a convertie en date ou en heure n'est pas
+    rangée sous sa forme Python (« 2026-11-15 00:00:00 », « 12:00:00 ») : refusée par un message
+    qui nomme la colonne et l'école, ou rendue sous une forme lisible (`💡 [proposé — à valider]`)."""
+    try:
+        regle = _regle(date_limite=saisie)
+    except ValueError as erreur:
+        message = str(erreur)
+        assert "Date limite d'envoi" in message
+        assert "ABC" in message
+        return
+    assert str(saisie) not in regle.date_limite
+    assert not re.search(r"\d{1,2}:\d{2}:\d{2}", regle.date_limite), regle.date_limite
+
+
+def test_t_reg_44_erreurs_de_plusieurs_ecoles_dans_un_seul_message():
+    """T-REG-44 — `💡 [proposé — à valider]` deux écoles du lot aux lignes illisibles : une seule
+    `ValueError` les cite toutes les deux, pour tout corriger en une fois au lieu de découvrir
+    les erreurs une à une, relance après relance."""
+    with pytest.raises(ValueError) as erreur:
+        _module().regles_par_ecole([
+            _ligne("ABC", statut="Lot 1", rythme="trimestriel"),
+            _ligne("DEF", statut="Lot 1", bc="peut-être"),
+        ])
+    message = str(erreur.value)
+    for attendu in ("ABC", "trimestriel", "DEF", "peut-être"):
+        assert attendu in message
