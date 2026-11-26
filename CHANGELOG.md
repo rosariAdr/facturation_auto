@@ -4,6 +4,11 @@ Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/). Versions : `0
 
 ## [Unreleased]
 
+### Ajouté (vague 2 du lot 1)
+- F-12 : classement des créneaux de l'agenda (`facturation/classement.py`) : code d'événement `#ÉCOLE-PROMO-MODULE`, puis intitulé exact, puis plus long préfixe ; sinon file à classer (« non reconnue », « ambiguë », « code inconnu »), jamais facturée par défaut ; ligne de Correspondances à garder au choix d'Adrian (ADR028).
+- F-13 : heures facturables (`facturation/heures.py`) : agenda, coefficient ou forfait ; lecture du taux d'une ligne de Tarifs sans jamais l'inventer.
+- F-14 : règles de facturation par école (`facturation/regles.py`) : rythme, période à facturer (mois ou cycle), échéance selon le délai de paiement, écoles d'un lot, blocages (bon de commande requis).
+
 ### Ajouté (vague 1 du lot 1)
 - F-10 : lecture de l'agenda des cours par son adresse iCal (`facturation/agenda.py`) : récurrences, exceptions, occurrences déplacées, événements annulés et journées entières exclus, durée exacte au changement d'heure ; commande `facturation agenda lire --mois AAAA-MM [--fichier]` ; l'adresse n'apparaît jamais dans un message. Dépendances : `icalendar`, `recurring-ical-events`.
 - F-11 : lecture contrôlée du MASTER (onglets et colonnes nommés dans l'erreur) et écriture sûre (`facturation/master.py`) : sauvegarde horodatée avant écriture, verrou par poste (refus si Excel ou LibreOffice a le classeur ouvert, ou si une autre instance écrit), verrou retiré même en cas d'erreur.

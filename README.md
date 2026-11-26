@@ -17,7 +17,9 @@ Factures mensuelles d'un formateur indépendant, à partir de son agenda de cour
 | Lire le MASTER avec contrôle des onglets et des colonnes, écrire avec sauvegarde et verrou | Disponible (F-11), pas encore branché | Module `facturation/master.py` |
 | Proposer le numéro de facture suivant | Disponible (F-15), pas encore branché | Module `facturation/numerotation.py` |
 | Facture d'une page jusqu'à 18 séances, sauts de page maîtrisés au-delà, mentions lisibles | Disponible (F-18) | Automatique dans `nouvelle_facture.py` |
-| Classer les séances, calculer les heures facturables | Prévu, lot 1 (F-12, F-13) | — |
+| Classer les créneaux de l'agenda (code d'événement, intitulé exact, préfixe ; sinon file à classer) | Disponible (F-12), pas encore branché | Module `facturation/classement.py` |
+| Calculer les heures facturables (agenda, coefficient, forfait) et lire le taux d'une ligne de Tarifs | Disponible (F-13), pas encore branché | Module `facturation/heures.py` |
+| Lire les règles de facturation par école (rythme, cycle, délai de paiement, bon de commande) | Disponible (F-14), pas encore branché | Module `facturation/regles.py` |
 | Préparer le 20, rappeler le 25 et du 28 à la fin du mois | Prévu, lot 1 (F-20, ADR027) | Le profil porte encore le 25 par défaut |
 | Tenir le journal `Sessions`, le suivi `Cours` et le registre `Factures` | Prévu, lot 1 (F-17, F-25) | À la main aujourd'hui |
 | Exporter le PDF | Prévu, lot 1 (ADR021) | LibreOffice est seulement détecté par `profil verifier` |
