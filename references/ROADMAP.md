@@ -14,7 +14,7 @@
 |---|---|
 | Lot 0 — socle | Livré le 29/10/2026 : paquet, profil, vérification de l'installation, tests, CI. Correctifs du 21/11/2026 fusionnés sur `dev` (voir `CHANGELOG.md`). |
 | Lot 1 — moteur | Pas commencé côté code : aucune lecture d'agenda, aucune préparation automatique, aucun export PDF par l'outil. |
-| Factures de novembre 2026 | Faites à la main avec l'outil actuel (spec JSON, `scripts/nouvelle_facture.py`), comme en octobre, avec les mentions de l'ADR030. |
+| Factures d'octobre et de novembre 2026 | Envoyées en l'état le 25/11/2026, avec l'outil actuel ; les mentions de l'ADR030 (F-24) s'appliquent à partir des factures de décembre. |
 | Aperçus pour toutes les écoles du lot 1 | Dès que la lecture de l'agenda (F-10) est prête, sans date fixe. |
 
 Ce qui est disponible aujourd'hui, et ce qui ne l'est pas : `README.md`, section « Ce que l'outil fait aujourd'hui ».

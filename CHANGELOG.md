@@ -4,6 +4,15 @@ Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/). Versions : `0
 
 ## [Unreleased]
 
+### Ajouté (F-24, mentions légales de l'ADR030)
+- Bas de facture écrit par le module (`apply_mentions`) : « Total HT », « Net à payer », mention 293 B, déclaration d'activité lue dans `Info / NDA`, échéance datée (émission + 30 jours par défaut), « Pas d'escompte », pénalités exigibles dès le lendemain de l'échéance, indemnité forfaitaire de 40 €.
+- Ligne « N° de contrat » (`ref_contrat`) et champ `echeance` dans la spec de `nouvelle_facture.py` ; aperçu complété.
+- Refus d'écrire, dès l'aperçu, si le NDA manque ou si l'émetteur ne porte pas « EI » ; mêmes contrôles en ERREUR dans `profil verifier`.
+- Contrôle après écriture étendu à l'échéance, au NDA et au contrat.
+
+### Corrigé (F-24)
+- Au-delà de 60 séances, le net à payer pointait vers une mauvaise cellule et la fin de facture sortait de la zone d'impression.
+
 ### Corrigé (fusionné sur `dev` le 21/11/2026)
 - `nouvelle_facture.py` refuse d'écraser une facture existante (onglet ou numéro déjà présent).
 - Entité exigée partout ; préfixe ou dossier d'une autre entité refusés.

@@ -18,7 +18,7 @@ Factures mensuelles d'un formateur indépendant, à partir de son agenda de cour
 | Préparer le 20, rappeler le 25 et du 28 à la fin du mois | Prévu, lot 1 (F-20, ADR027) | Le profil porte encore le 25 par défaut |
 | Tenir le journal `Sessions`, le suivi `Cours` et le registre `Factures` | Prévu, lot 1 (F-17, F-25) | À la main aujourd'hui |
 | Exporter le PDF | Prévu, lot 1 (ADR021) | LibreOffice est seulement détecté par `profil verifier` |
-| Mentions légales de l'ADR030 dans le gabarit | Prévu, lot 1 (F-24) | À vérifier à la main aujourd'hui |
+| Mentions légales de l'ADR030 (échéance, contrat, NDA, pénalités, 40 €…) | Disponible (F-24) | Écrites par `nouvelle_facture.py` ; refus si le NDA ou « EI » manque |
 | Appli .exe, brouillons Gmail, tableau de bord de suivi | Prévu, lot 2 | Après une phase de design (ADR032) |
 | Formulaire d'onboarding à envoyer aux écoles | Idée | — |
 
@@ -126,13 +126,14 @@ fmt.apply_metadata(ws, n_facture="R_ABC010", date_emission=date(2026, 10, 1),
 fmt.place_sessions(ws, "ABC", groups=[
     ("M1", "Statistiques — groupe A", [(date(2026, 9, 15), 3.5, 50)]),
 ], entite="ROSARI")
+fmt.apply_mentions(ws, entite="ROSARI", date_emission=date(2026, 10, 1))  # échéance : +30 jours
 fmt.apply_rib(ws, entite="ROSARI")
 fmt.apply_print_setup(ws, entite="ROSARI")
 wb.save("facture.xlsx")
 print(fmt.post_mortem(ws, entite="ROSARI"))
 ```
 
-L'entité est toujours un argument nommé (`entite=…`) : il n'y a pas d'entité par défaut.
+L'entité est toujours un argument nommé (`entite=…`) : il n'y a pas d'entité par défaut. `apply_mentions` exige une ligne `Info` / `NDA` dans `MASTER.Coordonnées`.
 
 ## Gabarit
 

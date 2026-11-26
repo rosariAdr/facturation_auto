@@ -40,11 +40,13 @@ def creer_master_fictif(racine: Path, entite: str = "ALPHA", destinataires: list
     ws = wb.active
     ws.title = "Coordonnées"
     ws.append(ENTETE_COORDONNEES)
-    ws.append(["Émetteur", entite, f"EMETTEUR FICTIF {entite}", "1 rue Fictive", "00000 VILLE-FICTIVE",
+    # Émetteur entrepreneur individuel (« EI ») et n° de déclaration d'activité : obligatoires (ADR030).
+    ws.append(["Émetteur", entite, f"EMETTEUR FICTIF {entite} EI", "1 rue Fictive", "00000 VILLE-FICTIVE",
                "", f"{entite.lower()}@example.org", "+33000000000"])
     ws.append(["Info", entite, "SIRET", "00000000000000"])
     ws.append(["Info", entite, "IBAN", "FR76 0000 0000 0000 0000 0000 000"])
     ws.append(["Info", entite, "BIC", "TESTFRPP"])
+    ws.append(["Info", entite, "NDA", f"Déclaration d'activité fictive de {entite}, n° 00000000000"])
     for ligne in destinataires if destinataires is not None else [DEST_ECOLEA]:
         ws.append(ligne)
     chemin = dossier / f"{entite}_MASTER.xlsx"
@@ -243,7 +245,7 @@ def test_facture_de_la_seconde_entite_lue_dans_son_master(tmp_path, deux_entites
 
     assert res.returncode == 0, res.stdout + res.stderr
     ws = load_workbook(deux_entites / "BETA" / "ECOLEA" / "BETA_ECOLEA.xlsx")["B_ECOLEA001 Sept 2026"]
-    assert ws["C7"].value == "EMETTEUR FICTIF BETA"
+    assert ws["C7"].value == "EMETTEUR FICTIF BETA EI"
     assert not (deux_entites / "ALPHA" / "ECOLEA").exists()
 
 
@@ -303,7 +305,7 @@ def test_apercu_montre_l_emetteur_et_le_libelle_complet(tmp_path, racine):
     res = lancer(tmp_path, spec, "--data-root", str(racine), "--dry-run")
 
     assert res.returncode == 0, res.stdout + res.stderr
-    assert "Émetteur      : EMETTEUR FICTIF ALPHA — 1 rue Fictive, 00000 VILLE-FICTIVE" in res.stdout
+    assert "Émetteur      : EMETTEUR FICTIF ALPHA EI — 1 rue Fictive, 00000 VILLE-FICTIVE" in res.stdout
     assert LIBELLE_LONG in res.stdout
 
 
@@ -379,6 +381,8 @@ def _facture_en_memoire(racine: Path):
     fmt.apply_metadata(ws, n_facture="A_ECOLEA001", date_emission=date(2026, 10, 1), entite="ALPHA")
     fmt.place_sessions(ws, ecole_name="ECOLE A", groups=GROUPES, entite="ALPHA")
     fmt.apply_rib(ws, entite="ALPHA")
+    # verifier_facture contrôle toujours l'échéance, le NDA et la ligne de contrat (F-24).
+    fmt.apply_mentions(ws, entite="ALPHA", date_emission=date(2026, 10, 1))
     return ws, dest
 
 

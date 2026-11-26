@@ -27,7 +27,7 @@ Ce fichier est un aiguillage : les règles vivent dans `AGENTS.md` et dans `refe
 
 Toute facture suit [references/PROC00_pcf.md](references/PROC00_pcf.md) : la partie 1 décrit ce que l'on fait aujourd'hui, la partie 2 la cible du lot 1. Les validations humaines ne s'automatisent pas.
 
-Contenu légal obligatoire de chaque facture : ADR030 dans [references/ADR.md](references/ADR.md). Tant que le gabarit ne porte pas toutes ces mentions (F-24), les vérifier à la main avant l'envoi.
+Contenu légal obligatoire de chaque facture : ADR030 dans [references/ADR.md](references/ADR.md). Depuis F-24, `nouvelle_facture.py` les écrit (échéance, contrat, NDA, pénalités, indemnité de 40 €) et refuse d'écrire si le NDA ou la mention « EI » manque dans le MASTER.
 
 ## Générer une facture (outil actuel)
 

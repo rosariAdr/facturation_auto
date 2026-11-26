@@ -44,7 +44,7 @@ def test_t_fmt_02_coordonnees_injectees(racine_fictive):
     fmt.apply_metadata(ws, n_facture="R_TEST002", date_emission=date(2026, 4, 30), entite="ROSARI")
     fmt.apply_rib(ws, entite="ROSARI")
     pm = fmt.post_mortem(ws, entite="ROSARI")
-    assert pm["emetteur_nom"] == "FORMATEUR FICTIF ROSARI"
+    assert pm["emetteur_nom"] == "FORMATEUR FICTIF ROSARI EI"
     assert pm["siret"] == "00000000000000"
     assert pm["iban"].startswith("FR76")
     assert pm["bic"] == "TESTFRPP"

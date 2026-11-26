@@ -12,10 +12,14 @@ prioritaire s'il existe.
 
 Source des données :
 - Coordonnées émetteur, destinataires : `MASTER.Coordonnées` (Type=Émetteur/Destinataire)
-- SIRET, IBAN, BIC, TVA : `MASTER.Coordonnées` (Type=Info, Code=<ENTITE>)
+- SIRET, IBAN, BIC, TVA, NDA : `MASTER.Coordonnées` (Type=Info, Code=<ENTITE>)
 - Aucune duplication de données dans ce module — tout est lu depuis MASTER au runtime.
   Le gabarit versionné est volontairement vide de toute coordonnée : elles sont
-  injectées par apply_emetteur / apply_metadata / apply_rib.
+  injectées par apply_emetteur / apply_metadata / apply_mentions / apply_rib.
+
+Mentions légales (ADR030) : les textes fixes du bas de facture (Total HT, Net à payer,
+TVA, échéance, escompte, pénalités, indemnité de recouvrement) sont écrits par
+apply_mentions, pas par le gabarit.
 
 Où le module cherche les données (racine de données) :
 1. `set_data_root(chemin)` si appelé explicitement ;
@@ -31,7 +35,7 @@ de lire en silence le MASTER d'une autre entité.
 import os
 import re
 from copy import copy as _copy
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -126,7 +130,7 @@ def _load_master_data(entite: str, refresh: bool = False) -> dict:
             "ECO": {...},
             ...
         },
-        "info": {"SIRET": ..., "IBAN": ..., "BIC": ..., "TVA": ...},
+        "info": {"SIRET": ..., "IBAN": ..., "BIC": ..., "TVA": ..., "NDA": ...},
     }
 
     Args:
@@ -253,6 +257,67 @@ def get_emetteur(*, entite: str) -> dict:
     return dict(_emetteur_for(entite))
 
 
+def get_nda(*, entite: str) -> str:
+    """N° de déclaration d'activité de l'entité, imprimé tel quel sur la facture (ADR030).
+
+    Lu dans `MASTER.Coordonnées`, ligne Type=Info, Code=<ENTITE>, Nom=NDA : la colonne
+    Adresse L1 porte le texte complet de la mention.
+
+    Args:
+        entite: code de l'entité, obligatoire et nommé (ADR001).
+
+    Raises:
+        ValueError: si la ligne `Info` / `NDA` manque ou si son texte est vide.
+    """
+    nda = _load_master_data(entite)["info"].get("NDA")
+    if not str(nda or "").strip():
+        raise ValueError(
+            f"N° de déclaration d'activité absent de MASTER.Coordonnées pour {entite} : "
+            f"ajouter la ligne Info / NDA (Type=Info, Code={entite}, Nom=NDA, "
+            "Adresse L1 = texte imprimé sur la facture)."
+        )
+    return nda
+
+
+# « EI » en dernier mot du nom (ADR030) : « Prénom Nom EI », « Prénom Nom - EI ».
+_EI_FINAL_RE = re.compile(r"\bEI\Z", re.IGNORECASE)
+
+
+def emetteur_porte_ei(nom: str) -> bool:
+    """Vrai si le nom de l'émetteur porte la mention d'entrepreneur individuel (ADR030).
+
+    Accepté, sans tenir compte de la casse ni des espaces en début et en fin : « EI »
+    comme dernier mot du nom, ou « Entrepreneur individuel » n'importe où. Refusé :
+    « E.I. », « EI » collé au nom (« NOMEI ») ou placé en tête, « EIRL », « Entrepreneur » seul.
+    """
+    nom = str(nom or "").strip()
+    return bool(_EI_FINAL_RE.search(nom)) or "entrepreneur individuel" in nom.casefold()
+
+
+DELAI_ECHEANCE_PAR_DEFAUT = timedelta(days=30)
+
+
+def calculer_echeance(date_emission: date, echeance: Optional[date] = None) -> date:
+    """Date d'échéance imprimée sur la facture (ADR030 §4).
+
+    Args:
+        date_emission: date d'émission de la facture.
+        echeance: délai du contrat ou de l'école, déjà converti en date ; None pour
+            le défaut, date d'émission plus 30 jours.
+
+    Raises:
+        ValueError: si l'échéance donnée précède la date d'émission (le jour même est accepté).
+    """
+    if echeance is None:
+        return date_emission + DELAI_ECHEANCE_PAR_DEFAUT
+    if echeance < date_emission:
+        raise ValueError(
+            f"échéance {echeance.strftime('%d/%m/%Y')} antérieure à la date d'émission "
+            f"{date_emission.strftime('%d/%m/%Y')}"
+        )
+    return echeance
+
+
 # Plan des cellules du gabarit standard, commun à toutes les entités (ADR015).
 LAYOUT_STANDARD = {
     "bandeau_row": 2,
@@ -263,6 +328,7 @@ LAYOUT_STANDARD = {
     "bon_commande_row": 14,
     "bon_commande_label_col": 3,  # C
     "bon_commande_value_cols": (4, 8),  # D:H (merge)
+    "contrat_row": 15,  # mêmes colonnes que le bon de commande
     "siret_label_cell": "C16",
     "siret_cell": "D16",
     "n_facture_label_cell": "C17",
@@ -280,9 +346,22 @@ LAYOUT_STANDARD = {
         "total": 17,   # Q (merge Q:R)
     },
     "total_row": 80,
+    # Mentions légales (ADR030), écrites par apply_mentions en colonne C. Au-delà de
+    # 60 séances, elles descendent d'autant que les lignes insérées par place_sessions.
+    "mentions_col": 3,  # C
+    "mentions_fin_courte": 7,  # G : échéance, escompte (fusion C:G du gabarit)
+    "mentions_fin_longue": 11,  # K : TVA, pénalités, indemnité (fusion C:K)
+    "net_a_payer_row": 83,  # libellé C83:D83, montant E83:F83
+    "ancienne_asterisque_row": 84,  # « *Montant non assujetti… », vidée
+    "tva_row": 85,
+    "nda_row": 86,
+    "echeance_row": 91,
+    "escompte_row": 92,
+    "penalites_row": 93,
+    "indemnite_row": 94,
     "rib_iban_cell": "D88",
     "rib_bic_cell": "D89",
-    "derniere_ligne_utile": 93,  # mentions légales → borne du print_area
+    "derniere_ligne_utile": 94,  # dernière mention légale → borne du print_area
 }
 
 LAYOUT_ROSARI = LAYOUT_STANDARD  # nom historique, conservé pour les scripts existants
@@ -291,6 +370,20 @@ LAYOUT_ROSARI = LAYOUT_STANDARD  # nom historique, conservé pour les scripts ex
 LAYOUTS: dict = {}
 
 THIN = Side(style="thin", color="000000")
+
+# Textes des mentions légales (ADR030), au mot près.
+MENTION_TOTAL_HT = "Total HT"
+MENTION_NET_A_PAYER = "Net à payer :"
+MENTION_TVA = "TVA non applicable, article 293 B du Code général des impôts."
+MENTION_ESCOMPTE = "Pas d'escompte en cas de paiement anticipé."
+MENTION_PENALITES = (
+    "Pénalités de retard : trois fois le taux d'intérêt légal, exigibles dès le "
+    "lendemain de l'échéance, sans rappel préalable."
+)
+MENTION_INDEMNITE = (
+    "Indemnité forfaitaire pour frais de recouvrement en cas de retard de paiement : 40 €."
+)
+LIBELLE_CONTRAT = "N° de contrat :"
 
 # ──────────────────────────────────────────────────────────────────────
 # Helpers internes
@@ -406,6 +499,68 @@ def _xworkbook_clone_modele(
 def _titre_facture(date_emission: date) -> str:
     """Texte du bandeau (B2), écrit par apply_metadata et contrôlé par verifier_facture."""
     return f"FACTURE\nDate d'émission: {date_emission.strftime('%d/%m/%Y')}"
+
+
+def _texte_echeance(echeance: date) -> str:
+    """Ligne d'échéance, écrite par apply_mentions et contrôlée par verifier_facture."""
+    return f"Échéance : {echeance.strftime('%d/%m/%Y')}"
+
+
+def _decalage(ws: Worksheet, layout: dict) -> int:
+    """Lignes insérées par place_sessions au-delà des 60 lignes de cours (0 sinon).
+
+    place_sessions insère les lignes juste avant le total et y réécrit la formule
+    `=SUM(Q<première ligne>:R<ligne au-dessus>)` : la ligne qui porte cette formule
+    donne le décalage de tout ce qui suit (total, mentions, zone d'impression).
+
+    Raises:
+        RuntimeError: si la formule du total est introuvable sous le tableau.
+    """
+    col = layout["cols_table"]["total"]
+    debut = (
+        f"=SUM({get_column_letter(col)}{layout['cours_first_row']}:"
+        f"{get_column_letter(col + 1)}"
+    )
+    for r in range(layout["total_row"], ws.max_row + 1):
+        if ws.cell(row=r, column=col).value == f"{debut}{r - 1})":
+            return r - layout["total_row"]
+    raise RuntimeError(
+        f"Formule du total introuvable en colonne {get_column_letter(col)} à partir de la "
+        f"ligne {layout['total_row']} : la facture ne vient pas du gabarit."
+    )
+
+
+def _fusionner_ligne(ws: Worksheet, row: int, cmin: int, cmax: int):
+    """Fusionne row sur les colonnes cmin à cmax, après avoir retiré les fusions qu'elles contiennent."""
+    _unmerge_in_range(ws, row, row, cmin, cmax)
+    ws.merge_cells(start_row=row, start_column=cmin, end_row=row, end_column=cmax)
+
+
+def _ecrire_reference(ws: Worksheet, layout: dict, row: int, libelle: str, valeur: str):
+    """Ligne de référence (bon de commande, contrat) : libellé en C, valeur fusionnée sur D:H.
+
+    Libellé et valeur prennent la police du libellé « N° de Facture ».
+    """
+    label_col = layout["bon_commande_label_col"]
+    vmin, vmax = layout["bon_commande_value_cols"]
+
+    modele = ws[layout["n_facture_label_cell"]]
+    for col, texte in ((label_col, libelle), (vmin, valeur)):
+        cell = ws.cell(row=row, column=col)
+        cell.value = texte
+        cell.font = _copy(modele.font)
+        cell.alignment = _copy(modele.alignment)
+
+    _fusionner_ligne(ws, row, vmin, vmax)
+    # Hauteur auto : la ligne fait 14.25pt dans le template, illisible en 18pt
+    ws.row_dimensions[row].height = None
+
+
+def _zone_impression(ws: Worksheet, layout: dict):
+    """Zone d'impression : de A1 à la dernière mention légale, décalage compris."""
+    derniere_col = get_column_letter(layout["cols_table"]["total"] + 1)
+    derniere_ligne = layout["derniere_ligne_utile"] + _decalage(ws, layout)
+    ws.print_area = f"A1:{derniere_col}{derniere_ligne}"
 
 
 def _layout_for(entite: str) -> dict:
@@ -567,8 +722,9 @@ def apply_metadata(
     *,
     entite: str,
     ref_bon_commande: Optional[str] = None,
+    ref_contrat: Optional[str] = None,
 ):
-    """Écrit titre row 2 + Bon de commande row 14 + SIRET D16 + N° Facture D17.
+    """Écrit titre row 2 + Bon de commande row 14 + Contrat row 15 + SIRET D16 + N° Facture D17.
 
     Args:
         ws: worksheet cible.
@@ -578,6 +734,8 @@ def apply_metadata(
         ref_bon_commande: réf. du bon de commande client (ex. "BC-EXEMPLE-0001").
             Si None, la ligne n'est pas écrite. Obligatoire pour une école dont
             la comptabilité rapproche facture et bon de commande.
+        ref_contrat: n° du contrat (ex. "CT-EXEMPLE-0001"), sur sa propre ligne (ADR030 §3).
+            Si None, la ligne 15 reste entièrement vide.
     """
     layout = _layout_for(entite)
     siret = _siret_for(entite)
@@ -591,23 +749,9 @@ def apply_metadata(
     ws[layout["n_facture_cell"]] = n_facture
 
     if ref_bon_commande:
-        row = layout["bon_commande_row"]
-        label_col = layout["bon_commande_label_col"]
-        vmin, vmax = layout["bon_commande_value_cols"]
-
-        modele = ws[layout["n_facture_label_cell"]]
-        for col, valeur in ((label_col, "Bon de commande :"), (vmin, ref_bon_commande)):
-            cell = ws.cell(row=row, column=col)
-            cell.value = valeur
-            cell.font = _copy(modele.font)
-            cell.alignment = _copy(modele.alignment)
-
-        _unmerge_in_range(ws, row, row, vmin, vmax)
-        ws.merge_cells(
-            start_row=row, start_column=vmin, end_row=row, end_column=vmax
-        )
-        # Hauteur auto : la ligne fait 14.25pt dans le template, illisible en 18pt
-        ws.row_dimensions[row].height = None
+        _ecrire_reference(ws, layout, layout["bon_commande_row"], "Bon de commande :", ref_bon_commande)
+    if ref_contrat:
+        _ecrire_reference(ws, layout, layout["contrat_row"], LIBELLE_CONTRAT, ref_contrat)
 
 
 def place_sessions(
@@ -831,11 +975,85 @@ def place_sessions(
             ws.column_dimensions[get_column_letter(c)].hidden = True
 
 
+def apply_mentions(
+    ws: Worksheet,
+    *,
+    entite: str,
+    date_emission: date,
+    echeance: Optional[date] = None,
+):
+    """Écrit les totaux et les mentions légales du bas de facture (ADR030, F-24).
+
+    À appeler après place_sessions : au-delà de 60 séances, les lignes insérées
+    décalent d'autant le total, les mentions et la zone d'impression.
+
+    Écrit (plan du gabarit standard, sans décalage) : « Total HT » en O80 ; « Net à
+    payer : » en C83, avec en E83 la formule qui reprend le total ; C84 vidée ; la
+    mention de TVA en C85 ; le n° de déclaration d'activité en C86 ; l'échéance en
+    C91 ; escompte, pénalités et indemnité forfaitaire en C92, C93 et C94.
+
+    Args:
+        ws: worksheet cible.
+        entite: code de l'entité, qui fixe le MASTER où lire `Info` / `NDA`.
+        date_emission: date d'émission de la facture.
+        echeance: délai du contrat ou de l'école ; None pour la date d'émission plus 30 jours.
+
+    Raises:
+        ValueError: `Info` / `NDA` absent du MASTER, ou échéance antérieure à la date
+            d'émission. Rien n'est écrit dans ce cas.
+    """
+    layout = _layout_for(entite)
+    # Les données obligatoires sont lues avant toute écriture : en cas d'erreur, l'onglet reste intact.
+    nda = get_nda(entite=entite)
+    texte_echeance = _texte_echeance(calculer_echeance(date_emission, echeance))
+    decalage = _decalage(ws, layout)
+    cols = layout["cols_table"]
+    col = layout["mentions_col"]
+    courte, longue = layout["mentions_fin_courte"], layout["mentions_fin_longue"]
+    total_row = layout["total_row"] + decalage
+
+    def ligne(cle: str) -> int:
+        return layout[cle] + decalage
+
+    ws.cell(row=total_row, column=cols["taux"]).value = MENTION_TOTAL_HT
+
+    net = ligne("net_a_payer_row")
+    _fusionner_ligne(ws, net, col, col + 1)
+    _fusionner_ligne(ws, net, col + 2, col + 3)
+    ws.cell(row=net, column=col).value = MENTION_NET_A_PAYER
+    ws.cell(row=net, column=col + 2).value = f"={get_column_letter(cols['total'])}{total_row}"
+
+    ws.cell(row=ligne("ancienne_asterisque_row"), column=col).value = None
+
+    # (ligne, texte, dernière colonne fusionnée ou None, ligne dont la cellule C donne la police).
+    # Le NDA n'est pas fusionné : un texte officiel long déborde jusqu'au bord de la zone d'impression.
+    for cle, texte, col_fin, modele in (
+        ("tva_row", MENTION_TVA, longue, "tva_row"),
+        ("nda_row", nda, None, "tva_row"),
+        ("echeance_row", texte_echeance, courte, "echeance_row"),
+        ("escompte_row", MENTION_ESCOMPTE, courte, "escompte_row"),
+        ("penalites_row", MENTION_PENALITES, longue, "penalites_row"),
+        ("indemnite_row", MENTION_INDEMNITE, longue, "penalites_row"),
+    ):
+        r = ligne(cle)
+        if col_fin is not None:
+            _fusionner_ligne(ws, r, col, col_fin)
+        cell = ws.cell(row=r, column=col)
+        cell.value = texte
+        if modele != cle:
+            source = ws.cell(row=ligne(modele), column=col)
+            cell.font = _copy(source.font)
+            cell.alignment = _copy(source.alignment)
+
+    _zone_impression(ws, layout)
+
+
 def apply_print_setup(ws: Worksheet, *, entite: str):
     """Fige la mise en page : portrait, ajusté à 1 page de large.
 
     Le template fait 18 colonnes ; sans ajustement, l'export PDF coupe les
-    colonnes Taux/Total sur une 2e page.
+    colonnes Taux/Total sur une 2e page. La zone d'impression va jusqu'à la
+    dernière mention légale, décalée comme elle au-delà de 60 séances.
 
     Args:
         ws: worksheet cible.
@@ -846,9 +1064,7 @@ def apply_print_setup(ws: Worksheet, *, entite: str):
     ws.page_setup.fitToWidth = 1
     ws.page_setup.fitToHeight = 0
     ws.sheet_properties.pageSetUpPr.fitToPage = True
-    cols = layout["cols_table"]
-    derniere_col = get_column_letter(cols["total"] + 1)
-    ws.print_area = f"A1:{derniere_col}{layout['derniere_ligne_utile']}"
+    _zone_impression(ws, layout)
 
 
 def apply_rib(ws: Worksheet, *, entite: str):
@@ -873,12 +1089,14 @@ def post_mortem(ws: Worksheet, *, entite: str) -> dict:
 
     Returns:
         dict avec : titre, emetteur_nom, destinataire_nom, n_facture, siret,
-                    ecole, premier_libelle, total_formule, iban, bic.
+                    ecole, premier_libelle, total_formule, iban, bic,
+                    echeance (texte de la ligne), nda, contrat.
     """
     layout = _layout_for(entite)
     cols = layout["cols_table"]
     rmin_em, _ = layout["emetteur_rows"]
     rmin_dest, _ = layout["destinataire_rows"]
+    col_mentions = layout["mentions_col"]
 
     return {
         "titre": ws.cell(row=layout["bandeau_row"], column=2).value,
@@ -897,6 +1115,11 @@ def post_mortem(ws: Worksheet, *, entite: str) -> dict:
         ).value,
         "iban": ws[layout["rib_iban_cell"]].value,
         "bic": ws[layout["rib_bic_cell"]].value,
+        "echeance": ws.cell(row=layout["echeance_row"], column=col_mentions).value,
+        "nda": ws.cell(row=layout["nda_row"], column=col_mentions).value,
+        "contrat": ws.cell(
+            row=layout["contrat_row"], column=layout["bon_commande_value_cols"][0]
+        ).value,
     }
 
 
@@ -909,23 +1132,31 @@ def verifier_facture(
     dest: Optional[dict],
     ecole_name: str,
     groups: list,
+    echeance: Optional[date] = None,
+    ref_contrat: Optional[str] = None,
 ) -> list:
     """Compare les cellules relues d'une facture aux valeurs attendues (PCF étape 7.3, FA-12).
 
     Contrôle les cellules du post-mortem et, ligne par ligne, la date, les heures et
     le taux de chaque séance. Les valeurs attendues viennent des mêmes sources que
-    l'écriture : la spec (numéro, date, séances) et MASTER.Coordonnées (émetteur,
-    SIRET, IBAN, BIC).
+    l'écriture : la spec (numéro, date, échéance, contrat, séances) et
+    MASTER.Coordonnées (émetteur, SIRET, IBAN, BIC, NDA). L'échéance, le NDA et la
+    ligne de contrat sont toujours contrôlés : sans `echeance`, l'échéance attendue est
+    la date d'émission plus 30 jours ; sans `ref_contrat`, la ligne de contrat doit être vide.
 
     Args:
         ws: onglet de la facture, de préférence relu depuis le fichier écrit.
         entite: code de l'entité.
         n_facture, date_emission, dest, ecole_name, groups: ceux passés à
             apply_metadata, apply_destinataire et place_sessions.
+        echeance, ref_contrat: ceux passés à apply_mentions et apply_metadata.
 
     Returns:
         Une ligne « ERREUR sur cellule … : attendu …, trouvé … » par écart ; liste vide
         si la facture est conforme.
+
+    Raises:
+        ValueError: `Info` / `NDA` absent du MASTER, ou échéance antérieure à l'émission.
     """
     layout = _layout_for(entite)
     cols = layout["cols_table"]
@@ -948,6 +1179,9 @@ def verifier_facture(
         ),
         "iban": donnees["info"]["IBAN"],
         "bic": donnees["info"]["BIC"],
+        "echeance": _texte_echeance(calculer_echeance(date_emission, echeance)),
+        "nda": get_nda(entite=entite),
+        "contrat": ref_contrat or None,  # apply_metadata n'écrit pas de contrat vide
     }
     ecarts = [
         f"ERREUR sur cellule {cle} : attendu {valeur!r}, trouvé {pm[cle]!r}"
