@@ -34,9 +34,11 @@ Format de la spec (voir examples/spec_exemple.json) :
      "seances": [{"date": "2026-09-15", "heures": 18, "taux": 90}]}
   ]
 }
-Le titre d'onglet compte au plus 31 caractères (limite d'Excel). Chaque ligne porte au moins une
-séance ; heures et taux sont des nombres écrits comme tels (jamais une chaîne), finis, les heures
-strictement positives et le taux positif ou nul.
+La spec s'enregistre en UTF-8 (avec ou sans BOM). Le titre d'onglet est un texte non vide d'au plus
+31 caractères, sans \\ / ? * [ ] : (règles d'Excel). Les dates s'écrivent AAAA-MM-JJ. `lignes` et
+`seances` sont des listes, même d'un seul élément ; chaque ligne porte `promotion`, `libelle` (texte)
+et au moins une séance ; heures et taux sont des nombres écrits comme tels (jamais une chaîne),
+finis, les heures strictement positives et le taux positif ou nul.
 """
 
 from __future__ import annotations
@@ -104,79 +106,211 @@ def echeance_de_la_spec(spec: dict) -> date:
 
 
 _LONGUEUR_MAX_ONGLET = 31  # limite d'Excel ; openpyxl n'émet qu'un avertissement au-delà
+# Caractères qu'Excel refuse dans un titre d'onglet ; openpyxl lève une ValueError qui ne cite pas le titre.
+_CARACTERES_INTERDITS_ONGLET = re.compile(r"[\\/?*\[\]:]")
+_LONGUEUR_MAX_CITATION = 60
+
+
+def _citer(valeur) -> str:
+    """La valeur fautive telle que Python l'écrit (`repr`), abrégée si elle est longue (ligne entière, nombre géant)."""
+    try:
+        texte = repr(valeur)
+    except ValueError:  # entier trop long pour être écrit en décimal (limite de Python)
+        return "un nombre entier de plus de 4 300 chiffres"
+    if len(texte) <= _LONGUEUR_MAX_CITATION:
+        return texte
+    return f"{texte[:_LONGUEUR_MAX_CITATION // 2]}… ({len(texte)} caractères)"
 
 
 def _nombre_fini(valeur) -> bool:
-    """Nombre écrit comme tel (ni chaîne, ni booléen, ni None), fini : ni NaN ni l'infini."""
-    return (
-        not isinstance(valeur, bool)
-        and isinstance(valeur, (int, float))
-        and math.isfinite(valeur)
-    )
+    """Nombre écrit comme tel (ni chaîne, ni booléen, ni None), fini : ni NaN ni l'infini, ni un entier trop
+    grand pour un nombre décimal (10**400 est du JSON valide, et `math.isfinite` lève alors OverflowError)."""
+    if isinstance(valeur, bool) or not isinstance(valeur, (int, float)):
+        return False
+    try:
+        return math.isfinite(valeur)
+    except OverflowError:
+        return False
 
 
-def _refuser_spec_mal_formee(spec: dict) -> None:
-    """Refuse, avant toute écriture, une spec que l'écriture convertirait en silence ou fausserait.
+def _date_lisible(valeur) -> bool:
+    """Date AAAA-MM-JJ, ou objet date déjà construit : ce que `_parse_date` accepte."""
+    try:
+        _parse_date(valeur)
+    except (TypeError, ValueError):
+        return False
+    return True
 
-    - titre d'onglet de plus de 31 caractères (limite d'Excel) ;
-    - `masquer_jour` présent qui n'est pas un booléen (`bool("false")` vaut vrai) ;
-    - ligne sans séance (`seances` vide ou absente) : elle disparaîtrait de la facture ;
-    - séance dont les heures ou le taux manquent ou ne sont pas des nombres finis écrits comme tels
-      (jamais de conversion d'une chaîne, même « 18 »), heures nulles ou négatives, taux négatif (un
-      taux à 0 reste admis).
 
-    Les rangs des lignes, et des séances dans leur ligne, se comptent à partir de 1.
+def _refuser_titre_d_onglet_invalide(onglet) -> None:
+    """Refuse un titre d'onglet qu'Excel n'accepte pas : autre chose qu'un texte (null, nombre : jamais converti
+    en silence, et openpyxl nomme « Sheet » un onglet sans titre), vide, plus de 31 caractères, ou l'un des
+    caractères \\ / ? * [ ] :.
 
     Raises:
-        ValueError: le message nomme la cause, la ligne, la séance et la valeur fautive.
-        KeyError: `onglet` ou `lignes` absent de la spec.
+        ValueError: le message nomme l'onglet et la valeur fautive.
     """
-    onglet = str(spec["onglet"])
+    if not isinstance(onglet, str):
+        raise ValueError(
+            f"onglet = {_citer(onglet)} : attendu le titre de l'onglet en texte, entre guillemets "
+            "(ex. \"R_ABC001 Sept 2026\")."
+        )
+    if not onglet:
+        raise ValueError("titre d'onglet vide : donner un titre à l'onglet dans la spec (ex. \"R_ABC001 Sept 2026\").")
+    interdit = _CARACTERES_INTERDITS_ONGLET.search(onglet)
+    if interdit:
+        raise ValueError(
+            f"titre d'onglet « {onglet} » : caractère « {interdit.group()} » interdit par Excel "
+            "(\\ / ? * [ ] :) — le remplacer dans la spec."
+        )
     if len(onglet) > _LONGUEUR_MAX_ONGLET:
         raise ValueError(
             f"titre d'onglet « {onglet} » trop long : {len(onglet)} caractères, pour "
             f"{_LONGUEUR_MAX_ONGLET} au plus (limite d'Excel) — le raccourcir dans la spec."
         )
+
+
+def _refuser_seance_mal_formee(seance, ou: str) -> None:
+    """Refuse une séance qui n'est pas un objet, sans date AAAA-MM-JJ, ou aux heures ou au taux invalides.
+
+    Raises:
+        ValueError: le message commence par `ou` (rangs de la ligne et de la séance) et cite la valeur fautive.
+    """
+    if not isinstance(seance, dict):
+        raise ValueError(
+            f"{ou} : attendu un objet {{\"date\": …, \"heures\": …, \"taux\": …}}, trouvé {_citer(seance)}."
+        )
+    if "date" not in seance:
+        raise ValueError(f"{ou} : clé date absente — écrire la date de la séance (AAAA-MM-JJ).")
+    if not _date_lisible(seance["date"]):
+        raise ValueError(
+            f"{ou} : date = {_citer(seance['date'])} — attendu une date AAAA-MM-JJ (ex. 2026-09-15)."
+        )
+    for champ in ("heures", "taux"):
+        if champ not in seance:
+            raise ValueError(f"{ou} : clé {champ} absente.")
+        valeur = seance[champ]
+        if isinstance(valeur, int) and not isinstance(valeur, bool) and not _nombre_fini(valeur):
+            raise ValueError(
+                f"{ou} : {champ} = {_citer(valeur)} — nombre trop grand, hors de portée d'un nombre décimal."
+            )
+        if not _nombre_fini(valeur):
+            raise ValueError(
+                f"{ou} : {champ} = {_citer(valeur)} n'est pas un nombre fini — écrire un nombre, "
+                "sans guillemets, avec un point décimal (ex. 1.5)."
+            )
+        if champ == "heures" and valeur <= 0:
+            raise ValueError(f"{ou} : heures = {valeur!r} — attendu un nombre d'heures "
+                             "strictement positif.")
+        if champ == "taux" and valeur < 0:
+            raise ValueError(f"{ou} : taux = {valeur!r} — un taux ne peut pas être négatif.")
+
+
+def _refuser_spec_mal_formee(spec: dict) -> None:
+    """Refuse, avant toute écriture, une spec que l'écriture convertirait en silence, fausserait ou ferait échouer
+    par une erreur Python sans rang.
+
+    - titre d'onglet qu'Excel refuse : autre chose qu'un texte, vide, plus de 31 caractères, caractère interdit ;
+    - `masquer_jour` présent qui n'est pas un booléen (`bool("false")` vaut vrai) ;
+    - `date_emission` qui n'est pas une date AAAA-MM-JJ ;
+    - `lignes` qui n'est pas une liste, ou liste vide ;
+    - ligne qui n'est pas un objet, sans `promotion`, sans `libelle` ou au libellé qui n'est pas un texte ;
+    - ligne sans séance (`seances` vide ou absente) : elle disparaîtrait de la facture ; `seances` qui n'est pas
+      une liste ;
+    - séance qui n'est pas un objet, sans date AAAA-MM-JJ, ou dont les heures ou le taux manquent ou ne sont pas
+      des nombres finis écrits comme tels (jamais de conversion d'une chaîne, même « 18 »), heures nulles ou
+      négatives, taux négatif (un taux à 0 reste admis).
+
+    Les rangs des lignes, et des séances dans leur ligne, se comptent à partir de 1. L'échéance reste contrôlée
+    par `generer` et `echeance_de_la_spec`.
+
+    Raises:
+        ValueError: le message nomme la cause, la ligne, la séance et la valeur fautive.
+        KeyError: `onglet`, `date_emission` ou `lignes` absent de la spec.
+    """
+    _refuser_titre_d_onglet_invalide(spec["onglet"])
     if "masquer_jour" in spec and not isinstance(spec["masquer_jour"], bool):
         raise ValueError(
             f"masquer_jour = {spec['masquer_jour']!r} : attendu true ou false (booléen, sans "
             "guillemets), ou la clé absente."
         )
-    for rang, ligne in enumerate(spec["lignes"], start=1):
-        libelle = ligne.get("libelle")
-        if not ligne.get("seances"):
+    if not _date_lisible(spec["date_emission"]):
+        raise ValueError(
+            f"date_emission = {_citer(spec['date_emission'])} — attendu une date AAAA-MM-JJ (ex. 2026-09-30)."
+        )
+    lignes = spec["lignes"]
+    if not lignes:
+        raise ValueError("La spec ne contient aucune ligne de cours.")
+    if not isinstance(lignes, list):
+        raise ValueError(
+            f"lignes = {_citer(lignes)} : attendu une liste de lignes, entre crochets "
+            "([{\"promotion\": …, \"libelle\": …, \"seances\": […]}, …])."
+        )
+    for rang, ligne in enumerate(lignes, start=1):
+        if not isinstance(ligne, dict):
+            raise ValueError(
+                f"ligne {rang} : attendu un objet {{\"promotion\": …, \"libelle\": …, \"seances\": […]}}, "
+                f"trouvé {_citer(ligne)}."
+            )
+        if "libelle" not in ligne:
+            raise ValueError(f"ligne {rang} : clé libelle absente — écrire le libellé de la ligne.")
+        libelle = ligne["libelle"]
+        if not isinstance(libelle, str):
+            raise ValueError(f"ligne {rang} : libelle = {_citer(libelle)} — attendu un texte, entre guillemets.")
+        if "promotion" not in ligne:
+            raise ValueError(f"ligne {rang} « {libelle} » : clé promotion absente — écrire la promotion de la ligne.")
+        seances = ligne.get("seances")
+        if not seances:
             raise ValueError(
                 f"ligne {rang} « {libelle} » sans séance (clé seances vide ou absente) : lui "
                 "ajouter ses séances, ou la retirer de la spec."
             )
-        for n, seance in enumerate(ligne["seances"], start=1):
-            ou = f"ligne {rang} « {libelle} », séance {n}"
-            for champ in ("heures", "taux"):
-                if champ not in seance:
-                    raise ValueError(f"{ou} : clé {champ} absente.")
-                valeur = seance[champ]
-                if not _nombre_fini(valeur):
-                    raise ValueError(
-                        f"{ou} : {champ} = {valeur!r} n'est pas un nombre fini — écrire un nombre, "
-                        "sans guillemets, avec un point décimal (ex. 1.5)."
-                    )
-                if champ == "heures" and valeur <= 0:
-                    raise ValueError(f"{ou} : heures = {valeur!r} — attendu un nombre d'heures "
-                                     "strictement positif.")
-                if champ == "taux" and valeur < 0:
-                    raise ValueError(f"{ou} : taux = {valeur!r} — un taux ne peut pas être négatif.")
+        if not isinstance(seances, list):
+            raise ValueError(
+                f"ligne {rang} « {libelle} » : seances = {_citer(seances)} — attendu une liste de séances, "
+                "entre crochets, même pour une seule séance ([{\"date\": …, \"heures\": …, \"taux\": …}])."
+            )
+        for n, seance in enumerate(seances, start=1):
+            _refuser_seance_mal_formee(seance, f"ligne {rang} « {libelle} », séance {n}")
 
 
 def charger_spec(chemin: Path) -> dict:
     """Lit la spec JSON (UTF-8, avec ou sans BOM) et vérifie sa structure avant tout usage.
 
     Raises:
-        ValueError: JSON illisible, clés obligatoires manquantes, aucune ligne de cours, ou spec
-            mal formée (`_refuser_spec_mal_formee` : ligne sans séance, heures ou taux invalides,
-            `masquer_jour` non booléen, titre d'onglet trop long) ; le message nomme la cause.
+        ValueError: fichier qui n'est pas en UTF-8 (UTF-16 ou ANSI compris), JSON illisible, spec qui
+            n'est pas un objet, clés obligatoires manquantes, aucune ligne de cours, ou spec mal formée
+            (`_refuser_spec_mal_formee` : titre d'onglet, `masquer_jour`, date d'émission, lignes et
+            séances) ; le message, en français, nomme la cause et ce qu'il faut corriger.
+        OSError: fichier introuvable ou illisible (`FileNotFoundError` s'il n'existe pas).
     """
-    # « utf-8-sig » : le Bloc-notes et PowerShell 5 écrivent l'UTF-8 avec un BOM.
-    spec = json.loads(chemin.read_text(encoding="utf-8-sig"))
+    brut = chemin.read_bytes()
+    try:
+        # « utf-8-sig » : le Bloc-notes et PowerShell 5 écrivent l'UTF-8 avec un BOM.
+        texte = brut.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        # PowerShell 5.1 écrit en UTF-16 avec `>` ou `Out-File` ; un éditeur ancien, en ANSI (cp1252).
+        nature = (
+            "elle est en UTF-16"
+            if brut.startswith((b"\xff\xfe", b"\xfe\xff"))
+            else f"octet 0x{exc.object[exc.start]:02X} hors UTF-8, sans doute de l'ANSI (Windows-1252)"
+        )
+        raise ValueError(
+            f"{chemin.name} n'est pas encodée en UTF-8 ({nature}) : l'enregistrer en UTF-8 (Bloc-notes : "
+            "Enregistrer sous, Encodage UTF-8 ; PowerShell : Out-File -Encoding utf8), puis relancer."
+        ) from None
+    try:
+        spec = json.loads(texte)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"{chemin.name} n'est pas un JSON lisible, ligne {exc.lineno}, colonne {exc.colno} ({exc.msg}) : "
+            "corriger la syntaxe (virgules, guillemets, accolades)."
+        ) from None
+    if not isinstance(spec, dict):
+        raise ValueError(
+            f"{chemin.name} : attendu un objet JSON entre accolades ({{\"entite\": …, \"lignes\": […]}}), "
+            f"trouvé {_citer(spec)}."
+        )
     obligatoires = {
         "entite", "ecole", "fichier_sortie", "onglet",
         "n_facture", "date_emission", "lignes",
@@ -184,8 +318,6 @@ def charger_spec(chemin: Path) -> dict:
     manquantes = obligatoires - set(spec)
     if manquantes:
         raise ValueError(f"Clés manquantes dans {chemin.name} : {sorted(manquantes)}")
-    if not spec["lignes"]:
-        raise ValueError("La spec ne contient aucune ligne de cours.")
     _refuser_spec_mal_formee(spec)
     return spec
 
@@ -323,7 +455,9 @@ def apercu(
     Les montants se calculent en décimal à partir de la valeur écrite (`str`, jamais le float
     binaire : 1,5 h × 33,33 € font 49,995 €, pas 49,99499…) et s'arrondissent au centime, la
     moitié vers le haut. Le TOTAL HT arrondit une seule fois la somme exacte des produits, comme le
-    `=SUM` du gabarit qui additionne des produits non arrondis.
+    `=SUM` du gabarit qui additionne des produits non arrondis. La colonne taux s'arrondit de même
+    (45,125 € s'affiche 45.13 €, comme le montant d'une heure), et le TOTAL HEURES se somme en
+    décimal (3 × 0,7 h font 2.1 h, pas 2.0999999999999996 h), au format inchangé.
 
     Args:
         echeance: échéance à annoncer ; par défaut, celle de la spec (ADR030).
@@ -338,15 +472,15 @@ def apercu(
     largeur_promo = max([12, *(len(s[1]) for s in seances_txt)])
     largeur_libelle = max([0, *(len(s[2]) for s in seances_txt)])
     lignes_txt = []
-    total_h = 0.0
+    total_h = Decimal(0)
     total_eur = Decimal(0)
     for d, promo, libelle, heures, taux in seances_txt:
         montant = Decimal(str(heures)) * Decimal(str(taux))
-        total_h += heures
+        total_h += Decimal(str(heures))
         total_eur += montant
         lignes_txt.append(
             f"  | {d.strftime('%d/%m/%Y')} | {promo:<{largeur_promo}} | {libelle:<{largeur_libelle}} "
-            f"| {heures:>5}h | {taux:>6.2f} € | {_au_centime(montant):>9} €"
+            f"| {heures:>5}h | {_au_centime(Decimal(str(taux))):>6} € | {_au_centime(montant):>9} €"
         )
     bc = spec.get("ref_bon_commande") or "—"
     contrat = spec.get("ref_contrat") or "—"
@@ -375,7 +509,8 @@ def apercu(
         "DÉTAIL DES SÉANCES :",
         *lignes_txt,
         "",
-        f"TOTAL HEURES : {total_h}h",
+        # Somme exacte, affichée comme avant (écriture d'un float : « 7.5h », « 18.0h »).
+        f"TOTAL HEURES : {float(total_h)}h",
         f"TOTAL HT     : {_au_centime(total_eur)} €",
         "============================",
     ])
@@ -404,14 +539,14 @@ def ecrire_onglet(wb: Workbook, spec: dict, dest: dict, *, entite: str) -> Works
 
     Avant la première écriture, elle se garde elle-même : `entite` doit être celle de la spec
     (ADR001) ; la spec doit être bien formée, comme à sa lecture par `charger_spec` (titre
-    d'onglet, `masquer_jour`, séances) ; la spec est lue en entier (dates, échéance, séances,
-    numéro, école) ; l'onglet ne doit pas exister, même à la casse près, ni le numéro figurer
-    dans un onglet du classeur (`conflits_ecriture`, FA-02). Si une erreur survient ensuite, en
-    cours d'écriture (MASTER incomplet, par exemple), l'onglet commencé est retiré avant que
-    l'erreur ne remonte : le classeur garde ses onglets tels qu'ils étaient, et un appelant qui
-    attrape l'erreur ne peut pas enregistrer une facture à moitié écrite. Le destinataire complet
-    et les mentions de l'ADR030 restent contrôlés par l'appelant, comme dans `generer`. Ni la spec
-    ni le destinataire ne sont modifiés.
+    d'onglet, `masquer_jour`, date d'émission, lignes et séances) ; la spec est lue en entier
+    (dates, échéance, séances, numéro, école) ; l'onglet ne doit pas exister, même à la casse
+    près, ni le numéro figurer dans un onglet du classeur (`conflits_ecriture`, FA-02). Si une
+    erreur survient ensuite, en cours d'écriture (MASTER incomplet, par exemple), l'onglet
+    commencé est retiré avant que l'erreur ne remonte : le classeur garde ses onglets tels qu'ils
+    étaient, et un appelant qui attrape l'erreur ne peut pas enregistrer une facture à moitié
+    écrite. Le destinataire complet et les mentions de l'ADR030 restent contrôlés par l'appelant,
+    comme dans `generer`. Ni la spec ni le destinataire ne sont modifiés.
 
     Args:
         wb: classeur ouvert qui reçoit l'onglet ; les autres onglets ne sont pas touchés.
@@ -423,10 +558,12 @@ def ecrire_onglet(wb: Workbook, spec: dict, dest: dict, *, entite: str) -> Works
         L'onglet écrit.
 
     Raises:
-        ValueError: `entite` différente de `spec["entite"]`, spec mal formée (titre d'onglet de
-            plus de 31 caractères, `masquer_jour` non booléen, ligne sans séance, heures ou taux
-            invalides), date mal formée (attendu AAAA-MM-JJ), échéance antérieure à la date
-            d'émission (`echeance_de_la_spec`), ou `Info` / `NDA` absent du MASTER.
+        ValueError: `entite` différente de `spec["entite"]`, spec mal formée (titre d'onglet
+            qu'Excel refuse, `masquer_jour` non booléen, date d'émission ou de séance mal formée,
+            `lignes` ou `seances` qui ne sont pas des listes, ligne ou séance qui n'est pas un
+            objet, clé de ligne absente, ligne sans séance, heures ou taux invalides), échéance
+            mal formée ou antérieure à la date d'émission (`echeance_de_la_spec`), ou `Info` /
+            `NDA` absent du MASTER.
         KeyError: clé obligatoire absente de la spec.
         EcritureRefusee: onglet déjà présent, ou numéro déjà présent dans un onglet ; le message
             nomme l'onglet en conflit.
@@ -571,9 +708,8 @@ def generer(spec: dict, dry_run: bool = False, *, prefixe: str | None = None) ->
         nda = fmt.get_nda(entite=entite)
     except ValueError as exc:
         raise EcritureRefusee(f"{exc} Mention obligatoire (ADR030).") from exc
-    # Une date d'émission mal formée lève sa ValueError ici, avant le contrôle de l'échéance
-    # qui la présenterait comme une échéance invalide.
-    _parse_date(spec["date_emission"])
+    # La date d'émission est déjà contrôlée par `_refuser_spec_mal_formee` : une erreur ici ne
+    # peut venir que de l'échéance.
     try:
         echeance = echeance_de_la_spec(spec)
     except ValueError as exc:
