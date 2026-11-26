@@ -1,4 +1,5 @@
-"""Chemins, mois et noms du lot 1 (P-0b, `facturation/chemins.py` ; banque de tests : T-FIC-20 à T-FIC-34).
+"""Chemins, mois et noms du lot 1 (P-0b, `facturation/chemins.py` ; banque de tests : T-FIC-20 à T-FIC-34,
+puis T-FIC-36, 38 et 42 pour la revue).
 
 Tests d'acceptation écrits avant l'implémentation : chaque test importe `facturation.chemins`
 lui-même, pour que l'absence du module fasse échouer les tests sans bloquer la collecte des
@@ -20,6 +21,8 @@ fichier (copie de travail `git worktree`) ; les fonctions de chemin ne créent a
 from __future__ import annotations
 
 import importlib
+import os
+import sys
 from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -225,3 +228,98 @@ def test_t_fic_34_journal_de_la_tache_a_cote_du_profil(tmp_path, monkeypatch):
     monkeypatch.setenv("FACTURATION_PROFIL", str(defaut))
     assert config.emplacement_par_defaut() == defaut
     assert chm.journal_tache(None) == defaut.parent / "journal_tache.jsonl"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Revue de P-0b (T-FIC-36, T-FIC-38, T-FIC-42)
+# ──────────────────────────────────────────────────────────────────────
+#
+# Constats des deux relecteurs. Écrits rouges avant le correctif : T-FIC-38 et T-FIC-42. T-FIC-36
+# couvre une garde déjà codée que les relecteurs ont trouvée sans test : il est vert, et a été
+# vérifié en cassant la garde (AGENTS.md §5).
+# - T-FIC-36 : un n° de facture, un code école ou un nom d'onglet qui sortirait de son dossier
+#   (« .. », séparateur, lecteur « C: ») est refusé par chaque fonction de chemin ;
+# - T-FIC-38 : `refuser_racine_dans_un_depot` comparait le chemin écrit (`absolute`), pas le chemin
+#   réel (`resolve`) : une racine `<dépôt>/../donnees`, hors du dépôt, était refusée à tort, et une
+#   jonction ou un lien qui mène dans un dépôt passait ;
+# - T-FIC-42 : `\d` accepte les chiffres non ASCII (« ２０２６-12 ») ; le mois brut devenait un
+#   dossier `_sorties/２０２６-12` distinct de `_sorties/2026-12`. Lecture retenue (`💡 [proposé —
+#   à valider]`) : un tel mois est refusé.
+
+
+@pytest.mark.parametrize(
+    "nom", ["..", ".", "../x", "R_ABC001/..", "ABC\\x", "C:x", "", "   "],
+    ids=["parent", "courant", "parent-puis-nom", "nom-puis-parent", "barre-inverse", "lecteur", "vide", "espaces"],
+)
+def test_t_fic_36_nom_de_fichier_sans_traversee(tmp_path, nom):
+    """T-FIC-36 — un n° de facture, un code école ou un nom d'onglet qui sortirait de son dossier
+    lève `ValueError`, dans chacune des fonctions de chemin qui le reçoivent."""
+    chm = _chm()
+    profil = _profil(tmp_path)
+    appels = {
+        "piece_emission": lambda: chm.piece_emission(profil, nom),
+        "piece_finale": lambda: chm.piece_finale(profil, nom),
+        "pdf_en_attente": lambda: chm.pdf_en_attente(profil, nom),
+        "classeur_ecole": lambda: chm.classeur_ecole(profil, nom),
+        "pdf_facture (école)": lambda: chm.pdf_facture(profil, nom, "R_ABC001 Déc 2026"),
+        "pdf_facture (onglet)": lambda: chm.pdf_facture(profil, "ABC", nom),
+    }
+    for fonction, appel in appels.items():
+        with pytest.raises(ValueError):
+            appel()
+            pytest.fail(f"{fonction} accepte « {nom} »")
+
+
+def test_t_fic_38a_racine_hors_depot_ecrite_avec_un_parent(tmp_path):
+    """T-FIC-38 — une racine écrite `<dépôt>/../donnees` est hors du dépôt : elle est acceptée (la
+    racine est comparée après résolution du chemin)."""
+    depot = tmp_path / "depot"
+    (depot / ".git").mkdir(parents=True)
+    (tmp_path / "donnees").mkdir()
+    assert _chm().refuser_racine_dans_un_depot(depot / ".." / "donnees") is None
+
+
+def _lien_vers_dossier(lien: Path, cible: Path) -> None:
+    """Lien symbolique vers un dossier ; sous Windows sans droit de lien, une jonction (mklink /J)."""
+    try:
+        os.symlink(cible, lien, target_is_directory=True)
+        return
+    except (OSError, NotImplementedError):
+        if sys.platform != "win32":
+            raise
+    try:
+        import _winapi
+        _winapi.CreateJunction(str(cible), str(lien))
+    except (ImportError, AttributeError, OSError) as exc:
+        pytest.skip(f"ni lien symbolique ni jonction possible ici : {exc}")
+
+
+def test_t_fic_38b_racine_qui_mene_dans_un_depot_par_un_lien(tmp_path):
+    """T-FIC-38 — une racine qui mène dans un dépôt par une jonction ou un lien symbolique est refusée
+    comme si elle y était écrite."""
+    depot = tmp_path / "depot"
+    (depot / ".git").mkdir(parents=True)
+    (depot / "donnees").mkdir()
+    lien = tmp_path / "raccourci"
+    _lien_vers_dossier(lien, depot / "donnees")
+    try:
+        assert not any((p / ".git").exists() for p in (lien, *lien.parents))  # la garde ne passe pas à vide
+        with pytest.raises(ValueError, match=r"(?i)dépôt"):
+            _chm().refuser_racine_dans_un_depot(lien)
+    finally:
+        if sys.platform == "win32":
+            os.rmdir(lien)  # retire le lien ou la jonction, pas le dossier visé
+        else:
+            lien.unlink()
+
+
+@pytest.mark.parametrize("mois", ["２０２６-12", "٢٠٢٦-12", "2026-1２"], ids=["pleine-chasse", "arabe", "mois-pleine-chasse"])
+def test_t_fic_42_mois_en_chiffres_non_ascii_refuse(tmp_path, mois):
+    """T-FIC-42 — un mois écrit avec des chiffres non ASCII est refusé (`ValueError` qui le cite), par
+    `mois_valide` comme par `dossier_mois` : jamais de second dossier du même mois (💡)."""
+    chm = _chm()
+    with pytest.raises(ValueError) as erreur:
+        chm.mois_valide(mois)
+    assert mois in str(erreur.value)
+    with pytest.raises(ValueError):
+        chm.dossier_mois(_profil(tmp_path), mois)

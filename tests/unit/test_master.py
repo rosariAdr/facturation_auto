@@ -1,4 +1,4 @@
-"""Lecture sûre du MASTER (F-11 ; banque de tests : T-MST-01 à T-MST-07, T-MST-17 à T-MST-19, T-MST-21 à T-MST-38).
+"""Lecture sûre du MASTER (F-11 ; banque de tests : T-MST-01 à T-MST-07, T-MST-17 à T-MST-19, T-MST-21 à T-MST-40).
 
 Tests d'acceptation écrits avant l'implémentation : chaque test importe `facturation.master`
 lui-même, pour que son absence fasse échouer les tests sans bloquer la collecte des autres.
@@ -325,6 +325,7 @@ import os  # noqa: E402
 import stat  # noqa: E402
 import struct  # noqa: E402
 import tomllib  # noqa: E402
+import warnings  # noqa: E402
 import zlib  # noqa: E402
 
 from openpyxl import Workbook  # noqa: E402
@@ -786,3 +787,105 @@ def test_t_mst_37_image_conservee_avec_pillow(tmp_path):
     _ajouter_dessin(chemin, DESSIN_IMAGE, image=True)
     assert "xl/media/image1.png" in _aller_retour_openpyxl(chemin, tmp_path)
     assert module.fidelite_aller_retour(chemin) == []
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Revue de P-0b (T-MST-39, T-MST-40)
+# ──────────────────────────────────────────────────────────────────────
+#
+# Constat des relecteurs : une bonne partie de `fidelite_aller_retour` n'était couverte par aucun
+# test. Le comptage des validations et des règles de mise en forme conditionnelle par feuille
+# pouvait être mis à zéro, et la comparaison des classeurs (fusions, noms définis…) rendue inactive,
+# sans qu'aucun test ne rougisse ; F-17 s'appuiera sur cette fonction pour refuser d'écrire dans un
+# classeur d'école (§ 17). Ces tests couvrent des gardes déjà codées : ils sont verts, et chacune a
+# été vérifiée en la cassant (AGENTS.md §5).
+# - T-MST-39 : une validation de données x14 (liste vers un autre onglet) et une barre de données
+#   x14, qu'openpyxl abandonne sans les relire (extension `extLst` de la feuille), sont signalées ;
+# - T-MST-40 : une fusion ou un nom défini perdus à l'enregistrement sont signalés. openpyxl les garde
+#   (§ 17) : la perte est simulée en lui faisant sauter leur écriture.
+
+_NS_X14 = 'xmlns:x14="http://schemas.microsoft.com/office/spreadsheetml/2009/9/main"'
+_NS_XM = 'xmlns:xm="http://schemas.microsoft.com/office/excel/2006/main"'
+EXTENSION_VALIDATION = (
+    f'<extLst><ext uri="{{CCE6A557-97BC-4b89-ADB6-D9C93CAAB3DF}}" {_NS_X14}>'
+    f'<x14:dataValidations count="1" {_NS_XM}>'
+    '<x14:dataValidation type="list" allowBlank="1" showInputMessage="1" showErrorMessage="1">'
+    "<x14:formula1><xm:f>'Sessions'!$B$2:$B$5</xm:f></x14:formula1><xm:sqref>B12:B20</xm:sqref>"
+    '</x14:dataValidation></x14:dataValidations></ext></extLst>'
+)
+EXTENSION_BARRE = (
+    f'<extLst><ext uri="{{78C0D931-6437-407d-A8EE-F0AAD7539E65}}" {_NS_X14}>'
+    f'<x14:conditionalFormattings><x14:conditionalFormatting {_NS_XM}>'
+    '<x14:cfRule type="dataBar" id="{00000000-0000-0000-0000-0000000F1C70}">'
+    '<x14:dataBar minLength="0" maxLength="100"><x14:cfvo type="autoMin"/><x14:cfvo type="autoMax"/>'
+    '</x14:dataBar></x14:cfRule><xm:sqref>D12:D20</xm:sqref>'
+    '</x14:conditionalFormatting></x14:conditionalFormattings></ext></extLst>'
+)
+
+
+def _ajouter_extension(chemin: Path, extension: str):
+    """Ajoute une extension `extLst` à la fin de la première feuille (`Coordonnées`)."""
+    temporaire = chemin.with_suffix(".tmp")
+    with zipfile.ZipFile(chemin) as source, zipfile.ZipFile(temporaire, "w", zipfile.ZIP_DEFLATED) as copie:
+        for info in source.infolist():
+            donnees = source.read(info.filename)
+            if info.filename == "xl/worksheets/sheet1.xml":
+                assert donnees.count(b"</worksheet>") == 1 and b"extLst" not in donnees  # garde non vide
+                donnees = donnees.replace(b"</worksheet>", extension.encode("utf-8") + b"</worksheet>")
+            copie.writestr(info, donnees)
+    shutil.move(temporaire, chemin)
+
+
+@pytest.mark.parametrize(
+    ("extension", "libelle"),
+    [(EXTENSION_VALIDATION, "validation(s) de données perdue(s)"),
+     (EXTENSION_BARRE, "règle(s) de mise en forme conditionnelle perdue(s)")],
+    ids=["validation-x14", "barre-de-donnees-x14"],
+)
+def test_t_mst_39_fidelite_extensions_x14_perdues(tmp_path, extension, libelle):
+    """T-MST-39 — une validation de données ou une règle de mise en forme conditionnelle x14,
+    qu'openpyxl abandonne à l'enregistrement, est signalée pour son onglet (« 1 avant, 0 après »),
+    sans toucher l'original."""
+    module = _module()
+    chemin = creer_master(tmp_path / "donnees")
+    _ajouter_extension(chemin, extension)
+    relu = tmp_path / "relu.xlsx"
+    with warnings.catch_warnings():  # openpyxl prévient qu'il abandonne l'extension : c'est voulu ici
+        warnings.simplefilter("ignore")
+        classeur = load_workbook(chemin)
+        assert classeur.sheetnames[0] == "Coordonnées"
+        classeur.save(relu)
+    with zipfile.ZipFile(relu) as archive:
+        assert b"x14:" not in archive.read("xl/worksheets/sheet1.xml")  # la perte a bien lieu
+    empreinte = _sha(chemin)
+    pertes = module.fidelite_aller_retour(chemin)
+    lignes = [ligne for ligne in pertes if libelle in ligne]
+    assert len(lignes) == 1, pertes
+    assert "Coordonnées" in lignes[0] and "1 avant, 0 après" in lignes[0], lignes[0]
+    assert _sha(chemin) == empreinte
+
+
+def test_t_mst_40_fidelite_fusion_et_nom_defini_perdus(tmp_path, monkeypatch):
+    """T-MST-40 — une plage fusionnée ou un nom défini perdus à l'enregistrement sont signalés (onglet,
+    ou nom du nom défini) ; conservés, ils ne le sont pas."""
+    from openpyxl.workbook.defined_name import DefinedName
+    import openpyxl.workbook._writer as ecrivain_classeur
+    import openpyxl.worksheet._writer as ecrivain_feuille
+
+    module = _module()
+    chemin = creer_master(tmp_path / "donnees")
+    wb = load_workbook(chemin)
+    wb["Coordonnées"].merge_cells("J1:K2")
+    wb.defined_names["Zone_fictive"] = DefinedName("Zone_fictive", attr_text="'Coordonnées'!$A$1:$B$3")
+    wb.save(chemin)
+    assert module.fidelite_aller_retour(chemin) == []  # openpyxl garde fusion et nom défini
+
+    monkeypatch.setattr(ecrivain_feuille.WorksheetWriter, "write_merged_cells", lambda self: None)
+    pertes = module.fidelite_aller_retour(chemin)
+    assert any("fusionnées" in ligne and "Coordonnées" in ligne for ligne in pertes), pertes
+    monkeypatch.undo()
+
+    monkeypatch.setattr(ecrivain_classeur.WorkbookWriter, "write_names", lambda self: None)
+    pertes = module.fidelite_aller_retour(chemin)
+    assert any("nom(s) défini(s)" in ligne and "Zone_fictive" in ligne for ligne in pertes), pertes
+    monkeypatch.undo()

@@ -1,4 +1,4 @@
-"""Heures facturables et taux horaire (F-13, ADR009, ADR016 ; banque de tests : T-HRS-01 à T-HRS-49).
+"""Heures facturables et taux horaire (F-13, ADR009, ADR016 ; banque de tests : T-HRS-01 à T-HRS-51).
 
 Tests d'acceptation écrits avant l'implémentation : chaque test importe `facturation.heures`
 lui-même, pour que l'absence du module fasse échouer les tests sans bloquer la collecte des
@@ -892,3 +892,44 @@ def test_t_hrs_49_libelle_inconnu_refuse():
     message = str(erreur.value)
     for attendu in ("Tarifs", "Projet fictif", "École Fictive Inconnue", "Écoles"):
         assert attendu in message, attendu
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Revue de P-0b (T-HRS-50, T-HRS-51)
+# ──────────────────────────────────────────────────────────────────────
+#
+# Constats des deux relecteurs, écrits rouges avant le correctif :
+# - T-HRS-50 : avec `ecoles=`, la colonne `École` de `Tarifs` était traduite en code, mais pas le
+#   segment école de la clé : une clé écrite avec le libellé (« École Fictive A|… ») était déclarée
+#   « introuvable » alors qu'une ligne la porte mot pour mot, et elle se trouve sans `ecoles=`. Le
+#   § 15 (« la correspondance d'une école accepte le code ou le libellé ») vaut pour les deux côtés ;
+# - T-HRS-51 : `arrondi_centime` arrondissait un `float` sur sa valeur binaire (2.675 → 2,67 au lieu
+#   de 2,68), sans erreur. Le § 1.2 veut des montants en `Decimal`. Lecture retenue (`💡 [proposé —
+#   à valider]`) : un `float` lève `TypeError`, comme `montant` refuse un type inattendu ; un entier
+#   (la somme d'une liste vide vaut 0) reste accepté.
+
+
+def test_t_hrs_50_cle_qui_nomme_l_ecole_par_son_libelle():
+    """T-HRS-50 — avec `ecoles=`, le segment école de la clé peut aussi porter le libellé de l'école : il
+    trouve la ligne de `Tarifs` écrite avec le libellé comme celle écrite avec le code, sans la
+    confondre avec celle d'une autre école."""
+    hrs = _hrs()
+    tarifs = TARIFS + TARIFS_LIBELLES
+    assert hrs.taux_horaire("École Fictive A|Projet fictif|M1", tarifs) == 55.0  # sans `ecoles=` : mot pour mot
+    assert hrs.taux_horaire("École Fictive A|Projet fictif|M1", tarifs, ecoles=ECOLES) == 55.0
+    assert hrs.taux_horaire("Institut Fictif B|Projet fictif|M1", tarifs, ecoles=ECOLES) == 48.0
+    ligne = hrs.ligne_tarif(" école fictive a |Statistiques fictives|M1", tarifs, ecoles=ECOLES)
+    assert (ligne["École"], ligne["Réf. contrat"]) == ("ABC", "CT-FICTIF-01")
+
+
+@pytest.mark.parametrize("valeur", [2.675, 59.325, 0.1, 157.5])
+def test_t_hrs_51_arrondi_centime_refuse_un_float(valeur):
+    """T-HRS-51 — `arrondi_centime` lève `TypeError` pour un `float` (💡) : un montant arrondi sur la
+    valeur binaire d'un float peut être faux d'un centime sans alerte ; le même nombre en `Decimal`
+    (écrit comme il s'affiche) est arrondi, et un entier reste accepté."""
+    hrs = _hrs()
+    with pytest.raises(TypeError):
+        hrs.arrondi_centime(valeur)
+    attendu = Decimal(repr(valeur)).quantize(Decimal("0.01"), rounding="ROUND_HALF_UP")
+    assert hrs.arrondi_centime(Decimal(repr(valeur))) == attendu
+    assert hrs.arrondi_centime(0) == Decimal("0.00")

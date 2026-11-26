@@ -1,4 +1,4 @@
-"""Schéma unique des journaux d'état (P-0b, `facturation/journal.py` ; banque de tests : T-JRN-01 à T-JRN-11).
+"""Schéma unique des journaux d'état (P-0b, `facturation/journal.py` ; banque de tests : T-JRN-01 à T-JRN-14).
 
 Tests d'acceptation écrits avant l'implémentation : chaque test importe `facturation.journal`
 lui-même, pour que l'absence du module fasse échouer les tests sans bloquer la collecte des
@@ -332,3 +332,92 @@ def test_t_jrn_11_preparation_reussie_sans_erreur(tmp_path):
     tache = jrn.ajouter_evenement(tmp_path / "journal_tache.jsonl", "demarrage", poste="POSTE-A", entite=None,
                                   execution="exec-fictive-2")
     assert tache["entite"] is None and tache["type"] == "demarrage"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Revue de P-0b (T-JRN-12 à T-JRN-14)
+# ──────────────────────────────────────────────────────────────────────
+#
+# Constats des deux relecteurs. Écrits rouges avant le correctif : T-JRN-12 et T-JRN-14. T-JRN-13
+# couvre des gardes déjà codées que les relecteurs ont trouvées sans test : il est vert, et chaque
+# garde a été vérifiée en la cassant (AGENTS.md §5).
+# - T-JRN-12 : une pièce d'émission abîmée (fichier vide après un arrêt brutal, pièce finale
+#   tronquée) remontait le conseil générique de `lire_json` : « supprimez-le pour qu'il soit
+#   recréé ». Une pièce réserve son n° et n'est jamais recréée ; la supprimer libérerait le n°, ou
+#   repasserait une facture émise « en émission ». Le message nomme le n° et ne conseille jamais de
+#   supprimer la pièce (`💡 [proposé — à valider]` : le texte du conseil reste libre) ;
+# - T-JRN-13 : une pièce dont le champ `n_facture` diffère du nom du fichier, à laquelle il manque un
+#   champ, ou d'un format inconnu, est refusée (`FichierAbime`) : la liste des n° réservés se
+#   construit à partir du contenu des pièces ;
+# - T-JRN-14 : même constat que T-FIC-35, au niveau du journal : un événement ajouté après une
+#   écriture interrompue se relit, sans `FichierAbime`.
+
+
+def _fichier_abime():
+    return importlib.import_module("facturation.fichiers").FichierAbime
+
+
+@pytest.mark.parametrize("abimee", ["piece-vide", "piece-finale-tronquee"])
+def test_t_jrn_12_piece_abimee_jamais_a_supprimer(tmp_path, abimee):
+    """T-JRN-12 — une pièce d'émission abîmée lève `FichierAbime`, dont le message nomme le n° et ne
+    conseille ni de supprimer la pièce ni de la laisser « recréer »."""
+    jrn = _jrn()
+    profil = _profil(tmp_path)
+    emissions = profil.dossier_sorties / "emissions"
+    if abimee == "piece-vide":
+        numero = "R_ABC007"
+        emissions.mkdir(parents=True)
+        (emissions / f"{numero}.json").write_bytes(b"")
+    else:
+        numero = "R_ABC001"
+        _ecrire_piece(emissions, numero, final=True)
+        finale = emissions / f"{numero}.final.json"
+        finale.write_bytes(finale.read_bytes()[:25])
+    with pytest.raises(_fichier_abime()) as erreur:
+        jrn.pieces_emission(profil)
+    message = str(erreur.value)
+    assert numero in message
+    assert "supprimez-le" not in message.casefold(), message
+    assert "recréé" not in message.casefold(), message
+
+
+@pytest.mark.parametrize("defaut", ["numero-different", "champ-absent", "format-inconnu"])
+def test_t_jrn_13_piece_incoherente_refusee(tmp_path, defaut):
+    """T-JRN-13 — une pièce dont le n° diffère du nom du fichier, à laquelle il manque un champ, ou d'un
+    format inconnu, lève `FichierAbime` qui nomme la pièce et le défaut."""
+    jrn = _jrn()
+    profil = _profil(tmp_path)
+    emissions = profil.dossier_sorties / "emissions"
+    _ecrire_piece(emissions, "R_ABC002")
+    fichier = emissions / "R_ABC002.json"
+    piece = json.loads(fichier.read_text(encoding="utf-8"))
+    if defaut == "numero-different":
+        piece["n_facture"] = "R_ABC001"
+        attendus = ("R_ABC001", "R_ABC002")
+    elif defaut == "champ-absent":
+        del piece["empreinte"]
+        attendus = ("R_ABC002", "empreinte")
+    else:
+        piece["format"] = 2
+        attendus = ("R_ABC002", "format")
+    fichier.write_text(json.dumps(piece, ensure_ascii=False), encoding="utf-8")
+    with pytest.raises(_fichier_abime()) as erreur:
+        jrn.pieces_emission(profil)
+    message = str(erreur.value)
+    for attendu in attendus:
+        assert attendu in message, (attendu, message)
+
+
+def test_t_jrn_14_evenement_ajoute_apres_une_ecriture_interrompue(tmp_path):
+    """T-JRN-14 — un événement ajouté après une écriture interrompue (dernière ligne tronquée) se relit :
+    la ligne tronquée est écartée avec un avertissement, et le journal reste lisible."""
+    jrn = _jrn()
+    journal = tmp_path / "_sorties" / "journal.jsonl"
+    premier = jrn.ajouter_evenement(journal, "preparation", poste="POSTE-A", entite="ROSARI", **_preparation())
+    with open(journal, "ab") as destination:
+        destination.write(b'{"v":1,"type":"preparation","mois":"2026-')
+    with pytest.warns(UserWarning):
+        second = jrn.ajouter_evenement(journal, "preparation", poste="POSTE-A", entite="ROSARI",
+                                       **_preparation(brouillons=3))
+        lus = jrn.lire_evenements(journal)
+    assert lus == [premier, second]

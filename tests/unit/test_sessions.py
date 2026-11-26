@@ -1,4 +1,4 @@
-"""Lecture de l'onglet `Sessions` (P-0b, `facturation/sessions.py` ; banque de tests : T-SES-01 à T-SES-16).
+"""Lecture de l'onglet `Sessions` (P-0b, `facturation/sessions.py` ; banque de tests : T-SES-01 à T-SES-18).
 
 Tests d'acceptation écrits avant l'implémentation : chaque test importe `facturation.sessions`
 (et `facturation.master`) lui-même, pour que l'absence du module fasse échouer les tests sans
@@ -23,9 +23,11 @@ Lectures retenues (`💡 [proposé — à valider]`) :
   (« xyz », « XYZ ») reste rendue nettoyée, en majuscules, même absente de `Écoles` ;
 - dans `lire_sessions`, ce refus place la ligne dans la seconde liste, avec son rang ;
 - une heure vide vaut None et ne rend pas la ligne illisible ; « sans heure » (pour `chercher`)
-  veut dire début et fin vides ;
+  veut dire qu'au moins une des deux heures manque (revue de P-0b, T-SES-17) ;
 - `Total HT` devient un `Decimal` égal au nombre tel qu'il s'écrit (157.5 → Decimal("157.5")) ;
-- le statut « abandonnée » de `Factures` est reconnu sans tenir compte de la casse ni des espaces.
+- le statut « abandonnée » de `Factures` est reconnu sans tenir compte de la casse ni des espaces,
+  ni de l'accent ; le n° abandonné se compare à celui de `Sessions` sans casse ni espaces (revue de
+  P-0b, T-SES-18).
 """
 
 from __future__ import annotations
@@ -348,3 +350,77 @@ def test_t_ses_16_chercher_exactes_puis_meme_jour_sans_heure():
     exactes, meme_jour = ses.chercher("ABC", DEBUT, FIN, lignes)
     assert [l.n_facture for l in exactes] == ["EXACTE"]
     assert [l.n_facture for l in meme_jour] == ["SANS-HEURE"]
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Revue de P-0b (T-SES-17, T-SES-18)
+# ──────────────────────────────────────────────────────────────────────
+#
+# Constats des deux relecteurs, écrits rouges avant le correctif :
+# - T-SES-17 : une ligne du même jour et de la même école qui n'a qu'une seule heure (Début « 9h »
+#   et Fin vide, ou l'inverse ; le § 15 constate des heures vides dans le MASTER réel) ne sortait
+#   dans aucune liste de `chercher`, ni exacte ni « sans heure » : la séance déjà facturée serait
+#   reprise dans un nouveau brouillon (double facturation). Lecture retenue (`💡 [proposé — à
+#   valider]`) : toute ligne du même jour, non exacte, dont une heure manque va dans la seconde
+#   liste, avec les lignes sans heure, pour être montrée comme un doublon possible ; elle n'est
+#   jamais « exacte ». Elle remplace la lecture d'origine (« sans heure » = début et fin vides).
+# - T-SES-18 : `numeros_abandonnes` tenait compte de la casse du n° (« r_abc001 » saisi à la main
+#   dans `Factures` ne désignait pas « R_ABC001 » de `Sessions`) et ne reconnaissait pas
+#   « abandonnee » sans accent : les lignes du n° abandonné comptaient comme facturées, et la
+#   séance n'aurait jamais été refacturée. Lecture retenue (`💡 [proposé — à valider]`) : le n° se
+#   compare sans tenir compte de la casse ni des espaces ; le statut est reconnu sans accent.
+
+
+@pytest.mark.parametrize(
+    "debut, fin",
+    [(time(9, 0), None), (None, time(12, 30)), (time(14, 0), None), (None, time(17, 0))],
+    ids=["debut-seul-de-la-seance", "fin-seule-de-la-seance", "debut-seul-autre", "fin-seule-autre"],
+)
+def test_t_ses_17a_ligne_a_une_seule_heure_dans_la_seconde_liste(debut, fin):
+    """T-SES-17 — une ligne du même jour et de la même école dont une seule heure est connue n'est
+    jamais exacte, mais sort dans la seconde liste (doublon possible, 💡), qu'elle ait l'heure de la
+    séance ou une autre : une séance déjà facturée ne disparaît pas de la recherche. Une autre
+    école ou un autre jour ne sortent toujours pas."""
+    ses = _ses()
+    lignes = [
+        _ligne(n_facture="UNE-HEURE", debut=debut, fin=fin),
+        _ligne(n_facture="AUTRE-ECOLE", ecole="ECO", debut=debut, fin=fin),
+        _ligne(n_facture="AUTRE-JOUR", date_seance=date(2026, 9, 16), debut=debut, fin=fin),
+    ]
+    exactes, meme_jour = ses.chercher("ABC", DEBUT, FIN, lignes)
+    assert exactes == []
+    assert [l.n_facture for l in meme_jour] == ["UNE-HEURE"]
+
+
+def test_t_ses_17b_heure_vide_dans_le_master(tmp_path):
+    """T-SES-17 — même constat sur un MASTER fictif, aux formes du § 15 : « 9h » et une Fin vide, puis
+    un Début vide et « 12h30 » ; chaque ligne lue sort dans la seconde liste de `chercher`."""
+    ses = _ses()
+    lignes, erreurs = _lire(tmp_path, [
+        _session(n_facture="R_ABC001", debut="9h", fin=""),
+        _session(n_facture="R_ABC002", debut=None, fin="12h30"),
+    ])
+    assert erreurs == []
+    assert [(l.debut, l.fin) for l in lignes] == [(time(9, 0), None), (None, time(12, 30))]
+    exactes, meme_jour = ses.chercher("ABC", DEBUT, FIN, lignes)
+    assert exactes == []
+    assert [l.n_facture for l in meme_jour] == ["R_ABC001", "R_ABC002"]
+
+
+@pytest.mark.parametrize(
+    "n_sessions, n_factures, statut",
+    [("R_ABC001", "r_abc001", "abandonnée"), ("R_ABC001", " R_abc001 ", "Abandonnée"),
+     ("r_abc001", "R_ABC001", "abandonnée"), ("R_ABC001", "R_ABC001", "abandonnee"),
+     ("R_ABC001", "R_ABC001", " ABANDONNEE ")],
+    ids=["numero-minuscules", "numero-casse-espaces", "sessions-minuscules", "statut-sans-accent",
+         "statut-majuscules-sans-accent"],
+)
+def test_t_ses_18_numero_abandonne_saisi_a_la_main(tmp_path, n_sessions, n_factures, statut):
+    """T-SES-18 — un n° abandonné saisi à la main dans `Factures`, à la casse près, ou au statut écrit
+    sans accent (💡), marque abandonnée la ligne de `Sessions` qui porte ce n° : `chercher` l'ignore,
+    et la séance pourra être refacturée."""
+    ses = _ses()
+    lignes, erreurs = _lire(tmp_path, [_session(n_facture=n_sessions)], factures=[_facture(n_factures, statut)])
+    assert erreurs == []
+    assert [l.abandonnee for l in lignes] == [True]
+    assert ses.chercher("ABC", DEBUT, FIN, lignes) == ([], [])

@@ -1,5 +1,5 @@
 """Outils communs des commandes et répartition de la ligne de commande (P-0b ; banque de tests :
-T-CLI-13 à T-CLI-19).
+T-CLI-13 à T-CLI-20).
 
 Tests d'acceptation écrits avant l'implémentation : chaque test importe `facturation.commandes`
 (ou `facturation.cli`) lui-même, pour que l'absence du module fasse échouer les tests sans bloquer
@@ -58,6 +58,15 @@ def test_t_cli_13_argument_mois():
     for valeur in ("2026-13", "12/2026", "2026-1", "décembre"):
         with pytest.raises(argparse.ArgumentTypeError, match=valeur):
             cmd.argument_mois(valeur)
+
+
+@pytest.mark.parametrize("valeur", ["２０２６-12", "٢٠٢٦-12"], ids=["pleine-chasse", "arabe"])
+def test_t_cli_20_argument_mois_en_chiffres_non_ascii(valeur):
+    """T-CLI-20 — revue de P-0b, écrit rouge avant le correctif : un mois écrit avec des chiffres non
+    ASCII (« ２０２６-12 ») lève `ArgumentTypeError` qui le cite ; il ne fabrique jamais un second
+    dossier `_sorties/<mois>` pour le même mois (💡, comme T-FIC-42)."""
+    with pytest.raises(argparse.ArgumentTypeError, match=valeur):
+        _cmd().argument_mois(valeur)
 
 
 def test_t_cli_14_argument_date():

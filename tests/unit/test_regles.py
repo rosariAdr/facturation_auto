@@ -1,4 +1,4 @@
-"""Règles de facturation par école (F-14, ADR015, ADR026, ADR027, ADR030 ; banque de tests : T-REG-01 à T-REG-48).
+"""Règles de facturation par école (F-14, ADR015, ADR026, ADR027, ADR030 ; banque de tests : T-REG-01 à T-REG-49).
 
 Tests d'acceptation écrits avant l'implémentation : chaque test importe `facturation.regles`
 lui-même, pour que l'absence du module fasse échouer les tests sans bloquer la collecte des
@@ -918,3 +918,23 @@ def test_t_reg_48_contrats_distincts_sans_message_de_doublon():
     assert sorted(regles) == [("ABC", "12345"), ("ABC", "CTR-FICTIF-001"), ("ABC", "CTR-FICTIF-002"),
                               ("ECO", "CTR-FICTIF-001")]
     assert all(regle.ecole == cle[0] and regle.n_contrat == cle[1] for cle, regle in regles.items())
+
+
+# Revue de P-0b (T-REG-49), écrit rouge avant le correctif : `regles_par_ecole` comparait les n° de
+# contrat à la casse près (« CTR-FICTIF-001 » et « ctr-fictif-001 » donnaient deux règles, donc deux
+# contrats et deux brouillons possibles), alors que le code école se compare sans casse et que
+# `heures.ligne_tarif` compare les `Réf. contrat` sans casse (NFC, casefold). Le § 16 refuse une
+# école « avec le même contrat deux fois » : une faute de casse ne fait pas un second contrat.
+
+
+@pytest.mark.parametrize("second", ["ctr-fictif-001", "Ctr-Fictif-001"], ids=["minuscules", "casse-melangee"])
+def test_t_reg_49_meme_contrat_a_la_casse_pres_refuse(second):
+    """T-REG-49 — une école avec le même n° de contrat à la casse près sur deux lignes est refusée
+    comme un doublon : `ValueError` qui nomme l'école et le contrat."""
+    with pytest.raises(ValueError) as erreur:
+        _module().regles_par_ecole([
+            _ligne("ABC", statut="Lot 1", contrat="CTR-FICTIF-001"),
+            _ligne("ABC", statut="Lot 1", contrat=second, delai="30 jours"),
+        ])
+    message = str(erreur.value)
+    assert "ABC" in message and re.search(r"(?i)ctr-fictif-001", message), message

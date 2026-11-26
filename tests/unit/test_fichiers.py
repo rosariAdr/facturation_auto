@@ -1,4 +1,5 @@
-"""Primitives de fichiers du lot 1 (P-0b, `facturation/fichiers.py` ; banque de tests : T-FIC-01 à T-FIC-19).
+"""Primitives de fichiers du lot 1 (P-0b, `facturation/fichiers.py` ; banque de tests : T-FIC-01 à T-FIC-19,
+puis T-FIC-35, 37 et 39 à 41 pour la revue).
 
 Tests d'acceptation écrits avant l'implémentation : chaque test importe `facturation.fichiers`
 lui-même, pour que l'absence du module fasse échouer les tests sans bloquer la collecte des
@@ -391,3 +392,154 @@ def test_t_fic_19_lire_json_abime_nomme_le_fichier(tmp_path):
     with pytest.raises(ValueError) as erreur:
         fic.lire_json(abime)
     assert "preparation.json" in str(erreur.value), str(erreur.value)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Revue de P-0b (T-FIC-35, T-FIC-37, T-FIC-39 à T-FIC-41 ; T-FIC-36, 38 et 42 dans test_chemins.py)
+# ──────────────────────────────────────────────────────────────────────
+#
+# Constats des deux relecteurs. Écrits rouges avant le correctif : T-FIC-35, 39, 40 et 41.
+# T-FIC-37 couvre une garde déjà codée que les relecteurs ont trouvée sans test : il est vert, et a
+# été vérifié en cassant la garde (AGENTS.md §5).
+# - T-FIC-35 : `ajouter_jsonl` collait l'enregistrement à une dernière ligne sans « \n » ; après
+#   une écriture interrompue (§ 3.1), le journal devenait illisible (`FichierAbime`) et l'événement
+#   neuf perdu. Lecture retenue (`💡 [proposé — à valider]`) : une fin illisible sans « \n » est
+#   coupée avant l'ajout, avec un avertissement (un seul, entre l'ajout et la lecture qui suit) ;
+#   une fin lisible sans « \n » est terminée par « \n », sans rien perdre ;
+# - T-FIC-37 : un enregistrement de classeur abîmé ou interrompu ne remplace jamais l'original et ne
+#   laisse aucun temporaire (relecture avant `os.replace`) ;
+# - T-FIC-39 : `lire_jsonl` refusait un journal enregistré « UTF-8 avec BOM » (Bloc-notes), alors que
+#   `lire_json` l'accepte ;
+# - T-FIC-40 (`💡`) : une sauvegarde n'apparaît sous son nom définitif qu'une fois sa copie complète
+#   et mise sur disque (temporaire, `fsync`, puis renommage) : un arrêt brutal ne laisse jamais une
+#   copie tronquée qui a l'air valide ;
+# - T-FIC-41 (`💡`) : `enregistrer_classeur_atomique` met le temporaire sur disque (`fsync`) avant
+#   `os.replace`, comme `ecrire_*_atomique` : une coupure de courant ne laisse pas un MASTER vide.
+
+
+def test_t_fic_35_ajout_apres_une_ecriture_interrompue(tmp_path):
+    """T-FIC-35 — un ajout qui suit une écriture interrompue (dernière ligne tronquée, sans « \\n »)
+    ne rend pas le journal illisible : la ligne tronquée est écartée avec un avertissement, et
+    l'événement neuf se relit."""
+    fic = _fic()
+    journal = tmp_path / "journal.jsonl"
+    journal.write_bytes(b'{"n":1}\n{"n":2,"etat":"inter')
+    with pytest.warns(UserWarning) as releves:
+        fic.ajouter_jsonl(journal, {"n": 3})
+        lus = fic.lire_jsonl(journal)
+    assert lus == [{"n": 1}, {"n": 3}]
+    assert len([r for r in releves if issubclass(r.category, UserWarning)]) == 1, [str(r.message) for r in releves]
+
+
+def test_t_fic_35_ajout_apres_une_derniere_ligne_sans_fin_de_ligne(tmp_path):
+    """T-FIC-35 — une dernière ligne lisible mais sans « \\n » (écrite à la main) n'est pas collée à
+    l'enregistrement suivant : les trois enregistrements se relisent, sans `FichierAbime`."""
+    fic = _fic()
+    journal = tmp_path / "journal.jsonl"
+    journal.write_bytes(b'{"a":1}\n{"b":2}')
+    fic.ajouter_jsonl(journal, {"c": 3})
+    assert fic.lire_jsonl(journal) == [{"a": 1}, {"b": 2}, {"c": 3}]
+
+
+def _enregistrement_factice(comportement: str):
+    """Remplace `Workbook.save` : écrit un fichier qui n'est pas un classeur, ou s'interrompt après
+    un début d'écriture. Accepte un chemin ou un fichier ouvert."""
+    def enregistrer(destination, *args, **kwargs):
+        octets = b"pas un zip" if comportement == "abime" else b"PK\x03\x04debut"
+        if hasattr(destination, "write"):
+            destination.write(octets)
+        else:
+            Path(destination).write_bytes(octets)
+        if comportement == "interrompu":
+            raise OSError(28, "No space left on device (simulé)")
+    return enregistrer
+
+
+@pytest.mark.parametrize("comportement", ["abime", "interrompu"])
+def test_t_fic_37_classeur_illisible_jamais_substitue(tmp_path, monkeypatch, comportement):
+    """T-FIC-37 — un enregistrement qui produit un fichier illisible (refusé à la relecture), ou qui
+    s'interrompt, lève une exception : l'original reste identique octet pour octet et aucun
+    temporaire ne reste."""
+    fic = _fic()
+    cible = tmp_path / "ROSARI_ABC.xlsx"
+    wb = Workbook()
+    wb.active["A1"] = "original"
+    wb.save(cible)
+    original = cible.read_bytes()
+    wb.active["A1"] = "modifié"
+    monkeypatch.setattr(wb, "save", _enregistrement_factice(comportement))
+    with pytest.raises(Exception):
+        fic.enregistrer_classeur_atomique(wb, cible)
+    assert cible.read_bytes() == original
+    assert _temporaires(tmp_path) == []
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["ROSARI_ABC.xlsx"]
+
+
+def test_t_fic_39_journal_avec_bom(tmp_path):
+    """T-FIC-39 — un journal enregistré « UTF-8 avec BOM » (Bloc-notes) se lit comme `lire_json` lit
+    un JSON avec BOM ; un ajout ultérieur se relit aussi."""
+    fic = _fic()
+    journal = tmp_path / "journal.jsonl"
+    journal.write_bytes("﻿".encode("utf-8") + b'{"n":1}\n{"n":2}\n')
+    assert fic.lire_jsonl(journal) == [{"n": 1}, {"n": 2}]
+    fic.ajouter_jsonl(journal, {"n": 3})
+    assert fic.lire_jsonl(journal) == [{"n": 1}, {"n": 2}, {"n": 3}]
+
+
+def test_t_fic_40_sauvegarde_jamais_visible_incomplete(tmp_path, monkeypatch):
+    """T-FIC-40 — tant que la copie n'est pas mise sur disque (`fsync`), aucun fichier ne porte le nom
+    d'une sauvegarde (💡 temporaire puis renommage) ; à la fin, la sauvegarde est complète."""
+    fic = _fic()
+    classeur = tmp_path / "ROSARI_MASTER.xlsx"
+    contenu = b"contenu fictif du MASTER " * 4096
+    classeur.write_bytes(contenu)
+    dossier = tmp_path / "sauvegardes"
+    nom_de_sauvegarde = re.compile(r"ROSARI_MASTER_\d{8}-\d{6}(?:-\d+)?\.xlsx")
+    visibles = []
+    vrai_fsync = os.fsync
+
+    def espion(descripteur):
+        visibles.append(sorted(p.name for p in dossier.iterdir() if nom_de_sauvegarde.fullmatch(p.name)))
+        return vrai_fsync(descripteur)
+
+    monkeypatch.setattr(os, "fsync", espion)
+    copie = fic.sauvegarder_fichier(classeur)
+    monkeypatch.undo()
+
+    assert visibles, "la sauvegarde n'est pas mise sur disque (fsync) avant d'être rendue"
+    assert all(noms == [] for noms in visibles), visibles
+    assert nom_de_sauvegarde.fullmatch(copie.name), copie.name
+    assert copie.read_bytes() == contenu
+    assert sorted(p.name for p in dossier.iterdir()) == [copie.name]
+
+
+def test_t_fic_41_classeur_mis_sur_disque_avant_substitution(tmp_path, monkeypatch):
+    """T-FIC-41 — `enregistrer_classeur_atomique` met le temporaire sur disque (`fsync` sur ce même
+    fichier) avant `os.replace` (💡, comme `ecrire_*_atomique`)."""
+    fic = _fic()
+    cible = tmp_path / "ROSARI_ABC.xlsx"
+    wb = Workbook()
+    wb.active["A1"] = "valeur fictive"
+    appels = []
+    vrai_fsync, vrai_replace = os.fsync, os.replace
+
+    def espion_fsync(descripteur):
+        statut = os.fstat(descripteur)
+        appels.append(("fsync", (statut.st_dev, statut.st_ino)))
+        return vrai_fsync(descripteur)
+
+    def espion_replace(src, dst, *args, **kwargs):
+        statut = os.stat(src)
+        appels.append(("replace", (statut.st_dev, statut.st_ino)))
+        return vrai_replace(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(os, "fsync", espion_fsync)
+    monkeypatch.setattr(os, "replace", espion_replace)
+    fic.enregistrer_classeur_atomique(wb, cible)
+    monkeypatch.undo()
+
+    remplacements = [i for i, (nature, _) in enumerate(appels) if nature == "replace"]
+    assert len(remplacements) == 1, appels
+    temporaire = appels[remplacements[0]][1]
+    assert ("fsync", temporaire) in appels[:remplacements[0]], appels
+    assert load_workbook(cible).active["A1"].value == "valeur fictive"

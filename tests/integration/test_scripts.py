@@ -1,9 +1,10 @@
 """Scripts et commande `facturation` sur données fictives.
 
-Banque de tests : T-CLI-01 à T-CLI-11, T-COH-01, T-VER-01 à T-VER-06, T-CFG-02, T-CFG-03.
+Banque de tests : T-CLI-01 à T-CLI-12, T-COH-01, T-VER-01 à T-VER-10, T-CFG-02, T-CFG-03.
 T-CLI-03 à 09 et T-VER-03, 04 : mentions légales et échéance (F-24, ADR030).
 T-CLI-10 : facture de plus de 60 séances (F-18).
 T-FAC-02 : aide du script, devenu l'enveloppe de `facturation.facture` (P-0a).
+T-CLI-12, T-VER-07 à 10 : socle du lot 1 (P-0b) et sa revue.
 """
 
 from __future__ import annotations
@@ -587,3 +588,21 @@ def test_t_ver_09_installation_saine_sans_attention_de_suivi_ni_de_fidelite(tmp_
         assert "se liront vides" not in attention, attention
         for mot in ("Tarifs", "Écoles", "Cours", "Taux HT/h", "Code facturation", "perdu", "perte"):
             assert mot not in attention, attention
+
+
+# Revue de P-0b (T-VER-10), écrit rouge avant le correctif : un MASTER que `lire_master` refuse
+# (colonne obligatoire absente de `Sessions`…) ne donnait qu'une ATTENTION, et `profil verifier`
+# rendait 0, alors que toute préparation échouera. La définition du module (une ERREUR « empêcherait
+# de préparer les factures ») appelle une ERREUR et le code de retour 1. Les onglets de suivi
+# illisibles restent des ATTENTION (T-VER-07).
+
+
+def test_t_ver_10_master_refuse_par_l_outil_est_une_erreur(tmp_path):
+    """T-VER-10 — `profil verifier` sur un MASTER fictif sans colonne « Total HT » dans `Sessions` :
+    une ERREUR qui nomme l'onglet et la colonne, et le code de retour 1."""
+    master, profil = _installation(tmp_path)
+    _retirer(master, "Sessions", "Total HT")
+    res = _lancer("-m", "facturation", "profil", "verifier", "--profil", str(profil))
+    erreurs = [ligne for ligne in res.stdout.splitlines() if ligne.startswith("[ERREUR]")]
+    assert any("Sessions" in e and "Total HT" in e for e in erreurs), res.stdout
+    assert res.returncode == 1, res.stdout + res.stderr
