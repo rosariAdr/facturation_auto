@@ -1,8 +1,9 @@
 """Facture dans le paquet (P-0a ; banque de tests : T-FAC-01, T-FAC-03 à T-FAC-17) et contrôles de la facture
-laissés hors de P-0a (fix-facture ; T-FAC-18 à T-FAC-25).
+laissés hors de P-0a (fix-facture ; T-FAC-18 à T-FAC-25, puis T-FAC-18c, 18d, 25b et 26 à 28 pour les constats de
+sa revue).
 
 T-FAC-02 (aide du script, en sous-processus) est à la fin de `tests/integration/test_scripts.py`, avec le côté
-script de T-FAC-18 à T-FAC-25.
+script de T-FAC-18 à T-FAC-29.
 
 `facturation/facture.py` reprend les fonctions de `scripts/nouvelle_facture.py` sans changer leur
 comportement, et en ajoute deux : `ecrire_onglet` (la séquence d'écriture de `generer`, sans rien
@@ -989,7 +990,13 @@ def _verifier_rang(message: str, *, ligne: int, seance: int | None = None) -> No
 
 
 def _formes_de(valeur) -> set[str]:
-    """Écritures admises de la valeur fautive dans un message : Python (repr, str), JSON, et virgule décimale."""
+    """Écritures admises de la valeur fautive dans un message : Python (repr, str), JSON, et virgule décimale.
+
+    Une chaîne se cite entre guillemets (Python, JSON ou « … ») : nue, elle se confondrait avec un nombre (« 18 »)
+    ou avec le texte fixe du message, et l'assertion passerait à vide (revue de fix-facture : « attendu true ou
+    false » contient déjà false)."""
+    if isinstance(valeur, str):
+        return {repr(valeur), json.dumps(valeur, ensure_ascii=False), f"« {valeur} »", f"«{valeur}»"}
     formes = {repr(valeur), str(valeur), json.dumps(valeur, ensure_ascii=False)}
     if isinstance(valeur, float):
         formes.add(str(valeur).replace(".", ","))
@@ -1093,7 +1100,8 @@ def test_t_fac_21_heures_nulles_ou_negatives_et_taux_negatif_refuses(racine_fict
 def test_t_fac_22_masquer_jour_non_booleen_refuse(racine_fictive, tmp_path, valeur):
     """T-FAC-22 — `masquer_jour` qui n'est pas un booléen (true ou false) est refusé avant toute écriture, par un
     message qui nomme la clé et la valeur. Avant le correctif, `bool()` le convertissait en silence : la chaîne
-    « false » masquait la colonne Jour."""
+    « false » masquait la colonne Jour. Une chaîne se cite entre guillemets (`_formes_de`) : sans eux, le cas
+    « false » passait à vide sur le texte fixe « attendu true ou false » (revue de fix-facture)."""
     facture = _module()
     spec = _spec_seances() | {"masquer_jour": valeur}
 
@@ -1137,3 +1145,307 @@ def test_t_fac_25_titre_d_onglet_de_plus_de_31_caracteres_refuse(racine_fictive,
 
     assert TITRE_32 in message, message
     assert re.search(r"(?<![\w.])32(?!\w)", message), f"longueur 32 absente du message : {message!r}"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Constats de la revue de fix-facture (T-FAC-18c, 18d, 25b, 26 à 28)
+# ──────────────────────────────────────────────────────────────────────
+#
+# Même style de refus que T-FAC-19 à 25 : `ValueError` ou `EcritureRefusee`, avant toute écriture, message qui nomme
+# la cause, le rang de la ligne et de la séance, et la valeur fautive. Le côté script (code 1, « [ERREUR] », sans
+# trace Python) est à la fin de `tests/integration/test_scripts.py`.
+
+
+def _colonne_taux(texte: str) -> list[str]:
+    """Colonne taux (l'avant-dernière) de chaque ligne de séance de l'aperçu, telle qu'affichée (« |  45.13 € | »)."""
+    return [ligne.split("|")[-2] for ligne in texte.splitlines() if ligne.startswith("  | ")]
+
+
+def _taux_au_format(taux: str) -> str:
+    """Colonne taux au format d'affichage inchangé : 6 caractères alignés à droite, puis « € »."""
+    return f" {taux:>6} € "
+
+
+@pytest.mark.parametrize(("taux", "affiche"), [(45.125, "45.13"), (60.555, "60.56")], ids=["45,125", "60,555"])
+def test_t_fac_18c_taux_affiche_arrondi_comme_le_montant(taux, affiche):
+    """T-FAC-18c — sur une ligne de l'aperçu (étape 6, validation humaine), la colonne taux s'arrondit comme la colonne
+    montant : en décimal à partir de la valeur écrite, la moitié vers le haut, au format inchangé. 1 h à 45,125 €
+    s'affiche « 45.13 € | 45.13 € », comme dans la facture Excel. Avant : le taux se formatait sur le float binaire
+    (`{taux:>6.2f}` : 45,125 arrondi au pair, 60,555 qui vaut 60,55499… en binaire) et la ligne se contredisait
+    (« 45.12 € | 45.13 € »). Garde : les taux à deux décimales de la spec complète ne bougent pas."""
+    facture = _module()
+    complete = _apercu_des_groupes(facture, _spec())
+    assert _colonne_taux(complete) == [_taux_au_format(t) for t in ("90.00", "90.00", "60.50")], complete
+
+    texte = _apercu_d_une_ligne(facture, [(1, taux)])
+
+    assert _montants_affiches(texte) == [_colonne_montant(affiche)], texte
+    assert _colonne_taux(texte) == [_taux_au_format(affiche)], texte
+
+
+@pytest.mark.parametrize(("heures", "total"), [(0.7, "2.1"), (1.1, "3.3"), (0.1, "0.3")])
+def test_t_fac_18d_total_heures_somme_decimale(heures, total):
+    """T-FAC-18d — le TOTAL HEURES de l'aperçu se somme en décimal à partir de la valeur écrite, comme les euros
+    (T-FAC-18) : trois séances de 0,7 h donnent « TOTAL HEURES : 2.1h ». Avant : somme en float binaire,
+    « 2.0999999999999996h » (« 3.3000000000000003h », « 0.30000000000000004h »). Garde : le format ne change pas
+    (spec complète : « 7.5h »)."""
+    facture = _module()
+    assert "TOTAL HEURES : 7.5h" in _apercu_des_groupes(facture, _spec()).splitlines()
+
+    texte = _apercu_d_une_ligne(facture, [(heures, 90)] * 3)
+
+    assert f"TOTAL HEURES : {total}h" in texte.splitlines(), texte
+
+
+# Titres qu'Excel refuse, au-delà de la longueur (T-FAC-25) : vide, null (converti en « None » par `str()`), un
+# nombre (jamais de conversion silencieuse), un caractère interdit (`/ \ ? * [ ] :`).
+TITRES_INVALIDES = {
+    "vide": "",
+    "null": None,
+    "nombre": 2026,
+    "caractere-interdit": "R_ABC001 09/2026",
+}
+
+
+def _exiger(message: str, motif: str) -> None:
+    """Le message contient le motif (expression régulière, sans tenir compte de la casse)."""
+    assert re.search(motif, message, re.IGNORECASE), f"« {motif} » absent du message : {message!r}"
+
+
+def _verifier_titre_cite(message: str, titre) -> None:
+    """Le refus d'un titre d'onglet nomme l'onglet et, sauf titre vide (rien à citer), la valeur fautive."""
+    _exiger(message, "onglet")
+    if titre != "":
+        _verifier_valeur(message, titre)
+
+
+@pytest.mark.parametrize("titre", list(TITRES_INVALIDES.values()), ids=list(TITRES_INVALIDES))
+def test_t_fac_25b_titre_d_onglet_invalide_pour_excel_refuse(racine_fictive, tmp_path, titre):
+    """T-FAC-25b — un titre d'onglet qu'Excel refuse (vide, null, nombre, caractère interdit) est refusé avant toute
+    écriture, comme un titre trop long, par un message qui nomme l'onglet et la valeur. Avant : null et "" étaient
+    écrits dans un onglet « Sheet », puis déclarés NON CONFORMES par un faux écart (et la relance avec le bon titre
+    était refusée : « le numéro R_ABC001 figure déjà dans l'onglet 'Sheet' ») ; le nombre levait une TypeError et le
+    caractère interdit la ValueError d'openpyxl, sans le titre, après l'aperçu."""
+    facture = _module()
+
+    message = _refus_avant_ecriture(facture, _spec_seances() | {"onglet": titre}, racine_fictive, tmp_path)
+
+    _verifier_titre_cite(message, titre)
+
+
+def _modifier_seance_3_ligne_2(champ: str, valeur):
+    def modifier(spec: dict):
+        spec["lignes"][1]["seances"][2][champ] = valeur
+    return modifier
+
+
+def _vider_les_seances_de_la_ligne_1(spec: dict) -> None:
+    spec["lignes"][0]["seances"] = []
+
+
+# (modification de `_spec_seances()`, vérification du message) : la garde `_refuser_spec_mal_formee` sur le chemin
+# d'`ecrire_onglet` (émission F-17) et de `generer` appelé avec une spec en dict, sans passer par `charger_spec`.
+CAS_SPEC_MAL_FORMEE_SANS_CHARGER_SPEC = {
+    "seances-vide": (
+        _vider_les_seances_de_la_ligne_1,
+        lambda m: (_verifier_rang(m, ligne=1), _exiger(m, re.escape(SPEC_SEANCES["lignes"][0]["libelle"]))),
+    ),
+    "heures-chaine": (
+        _modifier_seance_3_ligne_2("heures", "18"),
+        lambda m: (_exiger(m, "heures"), _verifier_rang(m, ligne=2, seance=3), _verifier_valeur(m, "18")),
+    ),
+    "taux-nan": (
+        _modifier_seance_3_ligne_2("taux", float("nan")),
+        lambda m: (_exiger(m, "taux"), _verifier_rang(m, ligne=2, seance=3), _verifier_valeur(m, float("nan"))),
+    ),
+    "masquer-jour-chaine": (
+        _poser("masquer_jour", "false"),
+        lambda m: (_exiger(m, "masquer_jour"), _verifier_valeur(m, "false")),
+    ),
+    "titre-32-caracteres": (
+        _poser("onglet", TITRE_32),
+        lambda m: (_exiger(m, re.escape(TITRE_32)), _verifier_valeur(m, 32)),
+    ),
+    **{
+        f"titre-{nom}": (_poser("onglet", titre), lambda m, titre=titre: _verifier_titre_cite(m, titre))
+        for nom, titre in TITRES_INVALIDES.items()
+    },
+}
+
+
+@pytest.mark.parametrize(
+    ("modifier", "verifier"),
+    list(CAS_SPEC_MAL_FORMEE_SANS_CHARGER_SPEC.values()),
+    ids=list(CAS_SPEC_MAL_FORMEE_SANS_CHARGER_SPEC),
+)
+def test_t_fac_26_ecrire_onglet_se_garde_d_une_spec_mal_formee(racine_fictive, dest, modifier, verifier):
+    """T-FAC-26 — `ecrire_onglet`, appelé directement (chemin de l'émission F-17, qui ne passe ni par `charger_spec` ni
+    par `generer`), refuse une spec mal formée avant d'écrire : ligne sans séance, heures « 18 », taux NaN,
+    `masquer_jour` « false », titre de 32 caractères ou invalide pour Excel. Le message nomme le rang et la valeur,
+    et le classeur, qui porte déjà une facture, garde ses onglets. Sans cette garde, l'onglet s'écrit : la séance
+    disparaît, « 18 » est converti, « false » masque la colonne Jour (revue de fix-facture : retirer l'appel laissait
+    les 75 tests T-FAC verts). Les cas du titre vide, null, nombre ou à caractère interdit sont aussi rouges sur le
+    code d'avant ce constat."""
+    facture = _module()
+    spec = _spec_seances()
+    modifier(spec)
+    wb = _classeur_avec_une_facture()
+    avant = _etat(wb)
+
+    with pytest.raises((ValueError, facture.EcritureRefusee)) as erreur:
+        facture.ecrire_onglet(wb, spec, dest, entite=ENTITE)
+
+    assert _etat(wb) == avant, "ecrire_onglet a écrit dans le classeur une spec mal formée"
+    verifier(str(erreur.value))
+
+
+@pytest.mark.parametrize(
+    ("modifier", "verifier"),
+    list(CAS_SPEC_MAL_FORMEE_SANS_CHARGER_SPEC.values()),
+    ids=list(CAS_SPEC_MAL_FORMEE_SANS_CHARGER_SPEC),
+)
+def test_t_fac_26b_generer_refuse_une_spec_mal_formee_avant_l_apercu(racine_fictive, capsys, modifier, verifier):
+    """T-FAC-26b — `generer` reçoit une spec en dict (sans `charger_spec`) mal formée : même en `dry_run`, il la refuse
+    avant l'aperçu, comme le dit sa docstring, par un message qui nomme le rang et la valeur, et n'écrit rien. Sans
+    cette garde, le `--dry-run` afficherait « 18 » converti en silence, et l'écriture suivrait."""
+    facture = _module()
+    spec = _spec_seances()
+    modifier(spec)
+
+    with pytest.raises((ValueError, facture.EcritureRefusee)) as erreur:
+        facture.generer(spec, dry_run=True)
+
+    sortie = capsys.readouterr().out
+    assert "APERÇU FACTURE" not in sortie, f"aperçu affiché avant le refus : {sortie}"
+    assert not (racine_fictive / "ROSARI" / "ABC").exists()
+    verifier(str(erreur.value))
+
+
+def _lignes_en(transformer):
+    def modifier(spec: dict):
+        spec["lignes"] = transformer(spec["lignes"])
+    return modifier
+
+
+def _ligne_2_en(transformer):
+    def modifier(spec: dict):
+        spec["lignes"][1] = transformer(spec["lignes"][1])
+    return modifier
+
+
+def _seances_de_la_ligne_2_en(transformer):
+    def modifier(spec: dict):
+        spec["lignes"][1]["seances"] = transformer(spec["lignes"][1]["seances"])
+    return modifier
+
+
+def _seance_3_de_la_ligne_2_en(valeur):
+    def modifier(spec: dict):
+        spec["lignes"][1]["seances"][2] = valeur
+    return modifier
+
+
+# Un refus de structure dit ce qui était attendu : une liste (ou un « tableau », en JSON).
+LISTE = r"liste|tableau"
+
+# (modification de `_spec_seances()`, vérification du message) : types inattendus que la garde doit refuser sans
+# trace Python (AttributeError, TypeError, OverflowError avant ce constat).
+CAS_TYPES_INATTENDUS = {
+    "lignes-en-objet": (
+        _lignes_en(lambda lignes: lignes[0]),  # une ligne seule, sans la liste autour
+        lambda m: (_exiger(m, r"\blignes\b"), _exiger(m, LISTE)),
+    ),
+    "lignes-en-chaine": (
+        _lignes_en(lambda lignes: lignes[0]["libelle"]),
+        lambda m: (_exiger(m, r"\blignes\b"), _exiger(m, LISTE)),
+    ),
+    "ligne-null": (_ligne_2_en(lambda ligne: None), lambda m: _verifier_rang(m, ligne=2)),
+    "ligne-en-liste": (_ligne_2_en(lambda ligne: [ligne]), lambda m: _verifier_rang(m, ligne=2)),
+    "seances-en-objet": (
+        # Une seule séance écrite en objet au lieu d'une liste d'un élément : la clé « heures » y est bien présente.
+        _seances_de_la_ligne_2_en(lambda seances: seances[0]),
+        lambda m: (_verifier_rang(m, ligne=2), _exiger(m, r"s[ée]ances"), _exiger(m, LISTE)),
+    ),
+    "seance-null": (_seance_3_de_la_ligne_2_en(None), lambda m: _verifier_rang(m, ligne=2, seance=3)),
+    "seance-nombre": (
+        _seance_3_de_la_ligne_2_en(18),
+        lambda m: (_verifier_rang(m, ligne=2, seance=3), _verifier_valeur(m, 18)),
+    ),
+    "heures-geantes": (
+        _modifier_seance_3_ligne_2("heures", 10**400),  # JSON valide ; `math.isfinite` lève OverflowError
+        lambda m: (_exiger(m, "heures"), _verifier_rang(m, ligne=2, seance=3)),
+    ),
+}
+
+
+@pytest.mark.parametrize(("modifier", "verifier"), list(CAS_TYPES_INATTENDUS.values()), ids=list(CAS_TYPES_INATTENDUS))
+def test_t_fac_27_types_inattendus_refuses_sans_trace(racine_fictive, tmp_path, modifier, verifier):
+    """T-FAC-27 — une spec dont `lignes` n'est pas une liste de lignes, une ligne qui n'est pas un objet, `seances`
+    qui n'est pas une liste, une séance qui n'est pas un objet, ou des heures entières trop grandes pour un float sont
+    refusées avant toute écriture, par le refus de structure (`ValueError` ou `EcritureRefusee`) qui nomme le rang.
+    Avant : AttributeError (« 'str' object has no attribute 'get' »), TypeError (« 'heures' in None »), OverflowError
+    de `math.isfinite`, ou, pour `seances` en objet, le message trompeur « séance 1 : clé heures absente » alors que la
+    clé est présente."""
+    facture = _module()
+    spec = _spec_seances()
+    modifier(spec)
+
+    message = _refus_avant_ecriture(facture, spec, racine_fictive, tmp_path)
+
+    verifier(message)
+
+
+def _supprimer_de_la_seance_3_ligne_2(cle: str):
+    def modifier(spec: dict):
+        del spec["lignes"][1]["seances"][2][cle]
+    return modifier
+
+
+def _supprimer_de_la_ligne_2(cle: str):
+    def modifier(spec: dict):
+        del spec["lignes"][1][cle]
+    return modifier
+
+
+# (modification de `_spec_seances()`, vérification du message) : dates et clés de ligne que la garde ne regardait
+# pas ; elles levaient KeyError ou la ValueError de `strptime`, sans rang, plus loin dans `generer`.
+CAS_DATES_ET_CLES_DE_LIGNE = {
+    "seance-sans-date": (
+        _supprimer_de_la_seance_3_ligne_2("date"),
+        lambda m: (_exiger(m, r"\bdate\b"), _verifier_rang(m, ligne=2, seance=3)),
+    ),
+    "date-mal-formee": (
+        _modifier_seance_3_ligne_2("date", "15/09/2026"),
+        lambda m: (_verifier_rang(m, ligne=2, seance=3), _verifier_valeur(m, "15/09/2026")),
+    ),
+    "ligne-sans-promotion": (
+        _supprimer_de_la_ligne_2("promotion"),
+        lambda m: (_exiger(m, "promotion"), _verifier_rang(m, ligne=2)),
+    ),
+    "ligne-sans-libelle": (
+        _supprimer_de_la_ligne_2("libelle"),
+        lambda m: (_exiger(m, r"libell[eé]"), _verifier_rang(m, ligne=2)),
+    ),
+    "date-emission-mal-formee": (
+        _poser("date_emission", "30/09/2026"),
+        lambda m: (_exiger(m, "date_emission"), _verifier_valeur(m, "30/09/2026")),
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    ("modifier", "verifier"), list(CAS_DATES_ET_CLES_DE_LIGNE.values()), ids=list(CAS_DATES_ET_CLES_DE_LIGNE),
+)
+def test_t_fac_28_dates_et_cles_de_ligne_refusees_avec_leur_rang(racine_fictive, tmp_path, modifier, verifier):
+    """T-FAC-28 — une séance sans `date` ou à la date hors format AAAA-MM-JJ (« 15/09/2026 »), une ligne sans
+    `promotion` ou sans `libelle`, une `date_emission` hors format : refus avant toute écriture, dans le même style
+    que les autres refus de structure, par un message qui nomme la clé, le rang de la ligne et de la séance, et la
+    valeur. Avant : KeyError brute ou ValueError de `strptime` (« time data '15/09/2026' does not match format »),
+    sans rang, que le script affichait en trace Python."""
+    facture = _module()
+    spec = _spec_seances()
+    modifier(spec)
+
+    message = _refus_avant_ecriture(facture, spec, racine_fictive, tmp_path)
+
+    verifier(message)

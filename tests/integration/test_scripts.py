@@ -5,7 +5,8 @@ T-CLI-03 à 09 et T-VER-03, 04 : mentions légales et échéance (F-24, ADR030).
 T-CLI-10 : facture de plus de 60 séances (F-18).
 T-FAC-02 : aide du script, devenu l'enveloppe de `facturation.facture` (P-0a).
 T-CLI-12, T-VER-07 à 10 : socle du lot 1 (P-0b) et sa revue.
-T-FAC-18 à T-FAC-25 : contrôles de la facture laissés hors de P-0a, côté script (fix-facture).
+T-FAC-18 à T-FAC-25 : contrôles de la facture laissés hors de P-0a, côté script (fix-facture) ; T-FAC-25b et
+T-FAC-27 à 29 : constats de la revue de fix-facture.
 """
 
 from __future__ import annotations
@@ -673,16 +674,16 @@ def _message_erreur(res: subprocess.CompletedProcess) -> str:
     return ""
 
 
-def _refus_du_script(tmp_path: Path, spec: dict, options: tuple = ()) -> str:
-    """Lance le script sur `spec`, avec un classeur d'école qui porte déjà une facture, et attend un refus propre :
-    code 1, sans trace Python, un message « [ERREUR] », et rien d'écrit sous la racine (aucun onglet ajouté au
-    classeur, aucun fichier créé). Rend le message."""
+def _refus_du_script(tmp_path: Path, spec: dict, options: tuple = (), *, encodage: str = "utf-8") -> str:
+    """Lance le script sur `spec`, écrite dans l'encodage donné, avec un classeur d'école qui porte déjà une facture,
+    et attend un refus propre : code 1, sans trace Python, un message « [ERREUR] », et rien d'écrit sous la racine
+    (aucun onglet ajouté au classeur, aucun fichier créé). Rend le message."""
     racine = tmp_path / "donnees"
     creer_master(racine)
     _classeur_existant(racine)
     avant = _instantane(racine)
     chemin = tmp_path / "spec.json"
-    chemin.write_text(json.dumps(spec, ensure_ascii=False), encoding="utf-8")
+    chemin.write_text(json.dumps(spec, ensure_ascii=False), encoding=encodage)
 
     res = _lancer("scripts/nouvelle_facture.py", str(chemin), "--data-root", str(racine), *options)
 
@@ -757,10 +758,13 @@ def test_t_fac_21_script_refuse_un_taux_negatif(tmp_path):
 
 def test_t_fac_22_script_refuse_masquer_jour_non_booleen(tmp_path):
     """T-FAC-22 — `masquer_jour` à la chaîne « false » : refus avant toute écriture, code 1, message « [ERREUR] » qui
-    nomme la clé et la valeur. Avant le correctif, la chaîne valait vrai : facture écrite, colonne Jour masquée."""
+    nomme la clé et la valeur. Avant le correctif, la chaîne valait vrai : facture écrite, colonne Jour masquée. La
+    valeur se cherche entre guillemets : nue, « false » est déjà dans le texte fixe « attendu true ou false », et
+    l'assertion passait à vide (revue de fix-facture)."""
     message = _refus_du_script(tmp_path, _spec_fac(masquer_jour="false"))
 
-    assert "masquer_jour" in message and "false" in message, message
+    assert "masquer_jour" in message, message
+    assert re.search(r"'false'|\"false\"|« ?false ?»", message), f"valeur 'false' non citée : {message!r}"
 
 
 def test_t_fac_23_script_accepte_une_spec_avec_bom(tmp_path):
@@ -864,3 +868,127 @@ def test_t_fac_25_script_refuse_un_titre_d_onglet_trop_long(tmp_path, options):
     message = _refus_du_script(tmp_path, _spec_fac(onglet=TITRE_32), options)
 
     assert TITRE_32 in message and re.search(r"(?<![\w.])32(?!\w)", message), message
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Constats de la revue de fix-facture, côté script (T-FAC-25b, 27 à 29)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _exiger_rang(message: str, *, ligne: int, seance: int | None = None) -> None:
+    """Le message nomme le rang de la ligne et, s'il y a lieu, celui de la séance (comptés à partir de 1)."""
+    assert re.search(rf"\bligne (n° ?)?{ligne}\b", message, re.IGNORECASE), message
+    if seance is not None:
+        assert re.search(rf"\bs[ée]ance (n° ?)?{seance}\b", message, re.IGNORECASE), message
+
+
+@pytest.mark.parametrize("options", [(), ("--dry-run",)], ids=["ecriture", "dry-run"])
+@pytest.mark.parametrize("titre", ["", None, 2026, "R_ABC001 09/2026"], ids=["vide", "null", "nombre", "caractere-interdit"])
+def test_t_fac_25b_script_refuse_un_titre_d_onglet_invalide_pour_excel(tmp_path, titre, options):
+    """T-FAC-25b — titre d'onglet vide, null, nombre ou à caractère interdit par Excel : refus avant toute écriture,
+    dès le `--dry-run`, code 1, message « [ERREUR] » qui nomme l'onglet, sans trace Python. Avant : vide ou null
+    écrits dans un onglet « Sheet » du classeur de l'école puis NON CONFORME (code 2), qu'il fallait nettoyer à la
+    main ; nombre et caractère interdit en trace Python après l'aperçu ; en `--dry-run`, tous acceptés (code 0)."""
+    message = _refus_du_script(tmp_path, _spec_fac(onglet=titre), options)
+
+    assert re.search(r"onglet", message, re.IGNORECASE), message
+    if titre:
+        assert str(titre) in message, message
+
+
+# (modification de la spec à deux lignes de `_lignes_fac`, rangs attendus, motif attendu dans le message)
+CAS_TYPES_INATTENDUS_SCRIPT = {
+    "lignes-en-objet": (lambda s: s.__setitem__("lignes", s["lignes"][0]), {}, r"\blignes\b.*(liste|tableau)"),
+    "ligne-null": (lambda s: s.__setitem__("lignes", [None]), {"ligne": 1}, None),
+    # Une séance en objet au lieu d'une liste d'un élément : la clé heures y est présente, le refus parle de liste.
+    "seances-en-objet": (
+        lambda s: s["lignes"][1].__setitem__("seances", s["lignes"][1]["seances"][0]), {"ligne": 2}, r"liste|tableau",
+    ),
+    "seance-null": (lambda s: s["lignes"][0].__setitem__("seances", [None]), {"ligne": 1, "seance": 1}, None),
+    "seance-nombre": (lambda s: s["lignes"][0].__setitem__("seances", [5]), {"ligne": 1, "seance": 1}, None),
+    "heures-geantes": (
+        lambda s: s["lignes"][0]["seances"][0].__setitem__("heures", 10**400), {"ligne": 1, "seance": 1}, "heures",
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    ("modifier", "rangs", "motif"), list(CAS_TYPES_INATTENDUS_SCRIPT.values()), ids=list(CAS_TYPES_INATTENDUS_SCRIPT),
+)
+def test_t_fac_27_script_refuse_des_types_inattendus_sans_trace(tmp_path, modifier, rangs, motif):
+    """T-FAC-27 — `lignes` en objet, ligne null, `seances` en objet, séance null ou nombre, heures entières géantes
+    (JSON valide) : refus avant toute écriture, code 1, message « [ERREUR] » qui nomme le rang, sans trace Python.
+    Avant : AttributeError, TypeError ou OverflowError en trace Python (code 1 quand même, rien d'écrit) ; pour
+    `seances` en objet, le message trompeur « séance 1 : clé heures absente », alors que la clé est présente."""
+    spec = _spec_fac()
+    modifier(spec)
+
+    message = _refus_du_script(tmp_path, spec)
+
+    if rangs:
+        _exiger_rang(message, **rangs)
+    if motif:
+        assert re.search(motif, message, re.IGNORECASE), message
+
+
+def _seance_3_ligne_2(spec: dict) -> dict:
+    return spec["lignes"][1]["seances"][2]
+
+
+# (modification de la spec à deux lignes, rangs attendus, texte attendu dans le message)
+CAS_DATES_ET_CLES_SCRIPT = {
+    "seance-sans-date": (lambda s: _seance_3_ligne_2(s).pop("date"), {"ligne": 2, "seance": 3}, "date"),
+    "date-mal-formee": (
+        lambda s: _seance_3_ligne_2(s).__setitem__("date", "15/09/2026"), {"ligne": 2, "seance": 3}, "15/09/2026",
+    ),
+    "ligne-sans-promotion": (lambda s: s["lignes"][1].pop("promotion"), {"ligne": 2}, "promotion"),
+    "date-emission-mal-formee": (lambda s: s.__setitem__("date_emission", "30/09/2026"), {}, "30/09/2026"),
+}
+
+
+@pytest.mark.parametrize(
+    ("modifier", "rangs", "texte"), list(CAS_DATES_ET_CLES_SCRIPT.values()), ids=list(CAS_DATES_ET_CLES_SCRIPT),
+)
+def test_t_fac_28_script_refuse_une_date_ou_une_cle_de_ligne_sans_trace(tmp_path, modifier, rangs, texte):
+    """T-FAC-28 — séance sans `date` ou à la date « 15/09/2026 », ligne sans `promotion`, `date_emission` hors
+    format : refus avant toute écriture, code 1, message « [ERREUR] » qui nomme la clé ou la valeur et les rangs, sans
+    trace Python. Avant : KeyError ou ValueError de `strptime` en trace Python, sans rang."""
+    spec = _spec_fac()
+    modifier(spec)
+
+    message = _refus_du_script(tmp_path, spec)
+
+    assert texte in message, message
+    if rangs:
+        _exiger_rang(message, **rangs)
+
+
+@pytest.mark.parametrize("encodage", ["utf-16", "cp1252"])
+def test_t_fac_29a_script_refuse_une_spec_hors_utf8_en_francais(tmp_path, encodage):
+    """T-FAC-29 — spec en UTF-16 (PowerShell 5.1 : `>` ou `Out-File` par défaut) ou en ANSI cp1252 : refus avant toute
+    écriture, code 1, message « [ERREUR] » en français qui demande d'enregistrer la spec en UTF-8 (contrats §1.6 :
+    chaque blocage dit quoi corriger). Avant : code 1, mais le message brut de Python, en anglais (« 'utf-8' codec
+    can't decode byte 0xff in position 0: invalid start byte »), qui ne dit pas quoi faire."""
+    message = _refus_du_script(tmp_path, _spec_fac(), encodage=encodage)
+
+    assert re.search(r"UTF-8", message, re.IGNORECASE), message
+    assert re.search(r"enregistr|sauvegard|encod", message, re.IGNORECASE), message
+
+
+def test_t_fac_29b_script_spec_introuvable_sans_trace(tmp_path):
+    """T-FAC-29 — chemin de spec inexistant : code 1, message « [ERREUR] » qui nomme le fichier et le dit introuvable,
+    sans trace Python, et rien d'écrit sous la racine. Avant : FileNotFoundError en trace Python (seule ValueError
+    était attrapée autour de `charger_spec`)."""
+    racine = tmp_path / "donnees"
+    creer_master(racine)
+    avant = _instantane(racine)
+    chemin = tmp_path / "spec_septembre.json"
+
+    res = _lancer("scripts/nouvelle_facture.py", str(chemin), "--data-root", str(racine))
+
+    assert res.returncode == 1, res.stdout + res.stderr
+    assert "Traceback" not in res.stderr, res.stderr
+    message = _message_erreur(res)
+    assert chemin.name in message, res.stdout + res.stderr
+    assert re.search(r"introuvable|n'existe pas|absent|inexistant", message, re.IGNORECASE), message
+    assert _instantane(racine) == avant
