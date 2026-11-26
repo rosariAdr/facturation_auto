@@ -28,19 +28,24 @@ Format de la spec (voir examples/spec_exemple.json) :
   "ref_bon_commande": "BC-EXEMPLE-0001",
   "ref_contrat": "CT-EXEMPLE-0001",        (facultatif)
   "echeance": "2026-10-30",                (facultatif : défaut émission + 30 jours)
-  "masquer_jour": true,
+  "masquer_jour": true,                    (facultatif : true ou false, défaut false)
   "lignes": [
     {"promotion": "M1 S1", "libelle": "[2026][M1 S1][Module A][...]",
      "seances": [{"date": "2026-09-15", "heures": 18, "taux": 90}]}
   ]
 }
+Le titre d'onglet compte au plus 31 caractères (limite d'Excel). Chaque ligne porte au moins une
+séance ; heures et taux sont des nombres écrits comme tels (jamais une chaîne), finis, les heures
+strictement positives et le taux positif ou nul.
 """
 
 from __future__ import annotations
 
 import json
+import math
 import re
 from datetime import date, datetime
+from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from openpyxl import Workbook, load_workbook
@@ -98,9 +103,80 @@ def echeance_de_la_spec(spec: dict) -> date:
     )
 
 
+_LONGUEUR_MAX_ONGLET = 31  # limite d'Excel ; openpyxl n'émet qu'un avertissement au-delà
+
+
+def _nombre_fini(valeur) -> bool:
+    """Nombre écrit comme tel (ni chaîne, ni booléen, ni None), fini : ni NaN ni l'infini."""
+    return (
+        not isinstance(valeur, bool)
+        and isinstance(valeur, (int, float))
+        and math.isfinite(valeur)
+    )
+
+
+def _refuser_spec_mal_formee(spec: dict) -> None:
+    """Refuse, avant toute écriture, une spec que l'écriture convertirait en silence ou fausserait.
+
+    - titre d'onglet de plus de 31 caractères (limite d'Excel) ;
+    - `masquer_jour` présent qui n'est pas un booléen (`bool("false")` vaut vrai) ;
+    - ligne sans séance (`seances` vide ou absente) : elle disparaîtrait de la facture ;
+    - séance dont les heures ou le taux manquent ou ne sont pas des nombres finis écrits comme tels
+      (jamais de conversion d'une chaîne, même « 18 »), heures nulles ou négatives, taux négatif (un
+      taux à 0 reste admis).
+
+    Les rangs des lignes, et des séances dans leur ligne, se comptent à partir de 1.
+
+    Raises:
+        ValueError: le message nomme la cause, la ligne, la séance et la valeur fautive.
+        KeyError: `onglet` ou `lignes` absent de la spec.
+    """
+    onglet = str(spec["onglet"])
+    if len(onglet) > _LONGUEUR_MAX_ONGLET:
+        raise ValueError(
+            f"titre d'onglet « {onglet} » trop long : {len(onglet)} caractères, pour "
+            f"{_LONGUEUR_MAX_ONGLET} au plus (limite d'Excel) — le raccourcir dans la spec."
+        )
+    if "masquer_jour" in spec and not isinstance(spec["masquer_jour"], bool):
+        raise ValueError(
+            f"masquer_jour = {spec['masquer_jour']!r} : attendu true ou false (booléen, sans "
+            "guillemets), ou la clé absente."
+        )
+    for rang, ligne in enumerate(spec["lignes"], start=1):
+        libelle = ligne.get("libelle")
+        if not ligne.get("seances"):
+            raise ValueError(
+                f"ligne {rang} « {libelle} » sans séance (clé seances vide ou absente) : lui "
+                "ajouter ses séances, ou la retirer de la spec."
+            )
+        for n, seance in enumerate(ligne["seances"], start=1):
+            ou = f"ligne {rang} « {libelle} », séance {n}"
+            for champ in ("heures", "taux"):
+                if champ not in seance:
+                    raise ValueError(f"{ou} : clé {champ} absente.")
+                valeur = seance[champ]
+                if not _nombre_fini(valeur):
+                    raise ValueError(
+                        f"{ou} : {champ} = {valeur!r} n'est pas un nombre fini — écrire un nombre, "
+                        "sans guillemets, avec un point décimal (ex. 1.5)."
+                    )
+                if champ == "heures" and valeur <= 0:
+                    raise ValueError(f"{ou} : heures = {valeur!r} — attendu un nombre d'heures "
+                                     "strictement positif.")
+                if champ == "taux" and valeur < 0:
+                    raise ValueError(f"{ou} : taux = {valeur!r} — un taux ne peut pas être négatif.")
+
+
 def charger_spec(chemin: Path) -> dict:
-    """Lit la spec JSON et vérifie que les clés obligatoires sont présentes."""
-    spec = json.loads(chemin.read_text(encoding="utf-8"))
+    """Lit la spec JSON (UTF-8, avec ou sans BOM) et vérifie sa structure avant tout usage.
+
+    Raises:
+        ValueError: JSON illisible, clés obligatoires manquantes, aucune ligne de cours, ou spec
+            mal formée (`_refuser_spec_mal_formee` : ligne sans séance, heures ou taux invalides,
+            `masquer_jour` non booléen, titre d'onglet trop long) ; le message nomme la cause.
+    """
+    # « utf-8-sig » : le Bloc-notes et PowerShell 5 écrivent l'UTF-8 avec un BOM.
+    spec = json.loads(chemin.read_text(encoding="utf-8-sig"))
     obligatoires = {
         "entite", "ecole", "fichier_sortie", "onglet",
         "n_facture", "date_emission", "lignes",
@@ -110,6 +186,7 @@ def charger_spec(chemin: Path) -> dict:
         raise ValueError(f"Clés manquantes dans {chemin.name} : {sorted(manquantes)}")
     if not spec["lignes"]:
         raise ValueError("La spec ne contient aucune ligne de cours.")
+    _refuser_spec_mal_formee(spec)
     return spec
 
 
@@ -221,6 +298,11 @@ def conflits_ecriture(
     return raisons
 
 
+def _au_centime(montant: Decimal) -> Decimal:
+    """Montant arrondi au centime, la moitié vers le haut (49,995 → 50.00)."""
+    return montant.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
 def apercu(
     spec: dict,
     groupes: list,
@@ -238,6 +320,11 @@ def apercu(
     longue promotion (FA-05). Les raisons de `conflits` (FA-02) s'affichent dans
     l'état de l'onglet : nouvel onglet, ou écriture refusée.
 
+    Les montants se calculent en décimal à partir de la valeur écrite (`str`, jamais le float
+    binaire : 1,5 h × 33,33 € font 49,995 €, pas 49,99499…) et s'arrondissent au centime, la
+    moitié vers le haut. Le TOTAL HT arrondit une seule fois la somme exacte des produits, comme le
+    `=SUM` du gabarit qui additionne des produits non arrondis.
+
     Args:
         echeance: échéance à annoncer ; par défaut, celle de la spec (ADR030).
         nda: n° de déclaration d'activité lu dans le MASTER ; « — » s'il n'est pas fourni.
@@ -251,13 +338,15 @@ def apercu(
     largeur_promo = max([12, *(len(s[1]) for s in seances_txt)])
     largeur_libelle = max([0, *(len(s[2]) for s in seances_txt)])
     lignes_txt = []
-    total_h = total_eur = 0.0
+    total_h = 0.0
+    total_eur = Decimal(0)
     for d, promo, libelle, heures, taux in seances_txt:
+        montant = Decimal(str(heures)) * Decimal(str(taux))
         total_h += heures
-        total_eur += heures * taux
+        total_eur += montant
         lignes_txt.append(
             f"  | {d.strftime('%d/%m/%Y')} | {promo:<{largeur_promo}} | {libelle:<{largeur_libelle}} "
-            f"| {heures:>5}h | {taux:>6.2f} € | {heures * taux:>9.2f} €"
+            f"| {heures:>5}h | {taux:>6.2f} € | {_au_centime(montant):>9} €"
         )
     bc = spec.get("ref_bon_commande") or "—"
     contrat = spec.get("ref_contrat") or "—"
@@ -287,7 +376,7 @@ def apercu(
         *lignes_txt,
         "",
         f"TOTAL HEURES : {total_h}h",
-        f"TOTAL HT     : {total_eur:.2f} €",
+        f"TOTAL HT     : {_au_centime(total_eur)} €",
         "============================",
     ])
 
@@ -314,14 +403,15 @@ def ecrire_onglet(wb: Workbook, spec: dict, dest: dict, *, entite: str) -> Works
     avec l'échéance de la spec, RIB, mise en page.
 
     Avant la première écriture, elle se garde elle-même : `entite` doit être celle de la spec
-    (ADR001) ; la spec est lue en entier (dates, échéance, séances, numéro, école) ; l'onglet ne
-    doit pas exister, même à la casse près, ni le numéro figurer dans un onglet du classeur
-    (`conflits_ecriture`, FA-02). Si une erreur survient ensuite, en cours d'écriture (MASTER
-    incomplet, par exemple), l'onglet commencé est retiré avant que l'erreur ne remonte : le
-    classeur garde ses onglets tels qu'ils étaient, et un appelant qui attrape l'erreur ne peut
-    pas enregistrer une facture à moitié écrite. Le destinataire complet et les mentions de
-    l'ADR030 restent contrôlés par l'appelant, comme dans `generer`. Ni la spec ni le destinataire
-    ne sont modifiés.
+    (ADR001) ; la spec doit être bien formée, comme à sa lecture par `charger_spec` (titre
+    d'onglet, `masquer_jour`, séances) ; la spec est lue en entier (dates, échéance, séances,
+    numéro, école) ; l'onglet ne doit pas exister, même à la casse près, ni le numéro figurer
+    dans un onglet du classeur (`conflits_ecriture`, FA-02). Si une erreur survient ensuite, en
+    cours d'écriture (MASTER incomplet, par exemple), l'onglet commencé est retiré avant que
+    l'erreur ne remonte : le classeur garde ses onglets tels qu'ils étaient, et un appelant qui
+    attrape l'erreur ne peut pas enregistrer une facture à moitié écrite. Le destinataire complet
+    et les mentions de l'ADR030 restent contrôlés par l'appelant, comme dans `generer`. Ni la spec
+    ni le destinataire ne sont modifiés.
 
     Args:
         wb: classeur ouvert qui reçoit l'onglet ; les autres onglets ne sont pas touchés.
@@ -333,21 +423,23 @@ def ecrire_onglet(wb: Workbook, spec: dict, dest: dict, *, entite: str) -> Works
         L'onglet écrit.
 
     Raises:
-        ValueError: `entite` différente de `spec["entite"]`, date mal formée (attendu
-            AAAA-MM-JJ), échéance antérieure à la date d'émission (`echeance_de_la_spec`), ou
-            `Info` / `NDA` absent du MASTER.
+        ValueError: `entite` différente de `spec["entite"]`, spec mal formée (titre d'onglet de
+            plus de 31 caractères, `masquer_jour` non booléen, ligne sans séance, heures ou taux
+            invalides), date mal formée (attendu AAAA-MM-JJ), échéance antérieure à la date
+            d'émission (`echeance_de_la_spec`), ou `Info` / `NDA` absent du MASTER.
         KeyError: clé obligatoire absente de la spec.
         EcritureRefusee: onglet déjà présent, ou numéro déjà présent dans un onglet ; le message
             nomme l'onglet en conflit.
     """
     _refuser_autre_entite(spec, entite)
+    _refuser_spec_mal_formee(spec)
     date_emission = _parse_date(spec["date_emission"])
     echeance = echeance_de_la_spec(spec)
     groupes = construire_groupes(spec["lignes"])
     onglet = spec["onglet"]
     n_facture = spec["n_facture"]
     ecole_name = spec.get("ecole_label", spec["ecole"])
-    masquer_jour = bool(spec.get("masquer_jour", False))
+    masquer_jour = spec.get("masquer_jour", False)  # booléen : contrôlé ci-dessus
     ref_bon_commande = spec.get("ref_bon_commande")
     ref_contrat = spec.get("ref_contrat") or None
 
@@ -441,8 +533,16 @@ def generer(spec: dict, dry_run: bool = False, *, prefixe: str | None = None) ->
         dry_run: aperçu seul, rien n'est écrit.
         prefixe: préfixe des numéros de l'entité ; par défaut, la règle du profil
             (initiale de l'entité + « _ »).
+
+    Raises:
+        ValueError: spec mal formée (comme à sa lecture par `charger_spec`), refusée avant
+            l'aperçu.
+        EcritureRefusee: refus avant toute écriture, dont le classeur qui ne peut pas être
+            enregistré (`PermissionError` : ouvert dans Excel ou LibreOffice) ; il reste intact.
+        PostMortemEnEcart: facture écrite, mais non conforme à l'aperçu.
     """
     entite = spec["entite"]
+    _refuser_spec_mal_formee(spec)
     sortie = controler_spec(spec, prefixe=prefixe, racine=fmt.get_data_root())
     dest = fmt.get_destinataire(spec["ecole"], entite=entite)
     if dest is None:
@@ -503,7 +603,15 @@ def generer(spec: dict, dry_run: bool = False, *, prefixe: str | None = None) ->
         wb.remove(wb.active)
 
     ws = ecrire_onglet(wb, spec, dest, entite=entite)
-    wb.save(sortie)
+    try:
+        wb.save(sortie)
+    except PermissionError as exc:
+        # Excel ou LibreOffice verrouille le classeur ouvert : l'ouverture en écriture échoue avant
+        # de rien y écrire, le fichier garde son contenu.
+        raise EcritureRefusee(
+            f"{sortie.name} n'a pas pu être enregistré (accès refusé) : le classeur est sans doute "
+            f"ouvert dans Excel ou LibreOffice. Le fermer, puis relancer la commande ({sortie})."
+        ) from exc
     print(f"\nÉcrit : {sortie}")
 
     # Post-mortem sur les cellules relues dans le fichier écrit, pas sur l'objet en mémoire.
