@@ -1,6 +1,6 @@
 """Préparation multi-écoles : lancement, fichiers produits et commandes `facturation preparer` /
-`facturation apercu` (F-16a ; banque de tests : T-PRP-04, 09, 11, 18, 19 et T-PRP-38 à T-PRP-44, les
-autres dans `tests/unit/test_preparation.py`).
+`facturation apercu` (F-16a ; banque de tests : T-PRP-04, 09, 11, 18, 19, T-PRP-38 à T-PRP-44 et, pour
+les constats de revue de F-16a, T-PRP-61 à T-PRP-70 ; les autres dans `tests/unit/test_preparation.py`).
 
 Tests d'acceptation écrits avant l'implémentation : chaque test importe `facturation.preparation`
 (ou `facturation.cli`) lui-même, pour que l'absence du module fasse échouer les tests sans bloquer la
@@ -40,7 +40,7 @@ import os
 import re
 import shutil
 import urllib.request
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -54,6 +54,7 @@ from tests.aide_preparation import (
     SEANCES_STANDARD,
     SeanceFictive,
     arborescence,
+    bloc,
     brouillon,
     cle,
     ecrire_decision,
@@ -150,7 +151,10 @@ def test_t_prp_04_relance_apres_deplacement_ajout_et_annulation(tmp_path):
 def test_t_prp_09_agenda_indisponible(tmp_path, monkeypatch):
     """T-PRP-09 — Agenda indisponible : `PreparationImpossible` levée depuis `AgendaIndisponible`,
     événement `échec` sans `https://` (message masqué, garde : « adresse masquée » y figure),
-    préparation précédente identique octet pour octet."""
+    préparation précédente identique octet pour octet.
+
+    Constat de revue de F-16a : le message de l'exception, que `facturation preparer` affiche tel
+    quel, est masqué lui aussi ; le journal seul ne le prouvait pas (il masque de lui-même)."""
     from facturation import agenda
 
     P = prp()
@@ -167,6 +171,7 @@ def test_t_prp_09_agenda_indisponible(tmp_path, monkeypatch):
     with pytest.raises(P.PreparationImpossible) as exc:
         P.lancer_preparation(p, MOIS, contenu_ics=None, maintenant=MAINTENANT)
     assert isinstance(exc.value.__cause__, agenda.AgendaIndisponible)
+    assert "https://" not in str(exc.value) and "adresse masquée" in str(exc.value)
 
     assert _contenu_du_dossier(dossier, sauf=("journal.jsonl",)) == avant
     evenements = journal.lire_evenements(chemins.journal_mois(p, MOIS), types=["preparation"])
@@ -464,3 +469,221 @@ def test_t_prp_44_apercus_ecrits(tmp_path):
         texte = (dossier / "apercus" / f"{b.identifiant}.txt").read_text(encoding="utf-8")
         assert f"Empreinte : {b.empreinte[:12]}" in texte
     assert "Réunion pédagogique" in (dossier / "a_classer.txt").read_text(encoding="utf-8")
+
+
+# ──────────────────────────────────────────────────────────────────────
+# T-PRP-61 à T-PRP-70 : constats de revue de F-16a
+# ──────────────────────────────────────────────────────────────────────
+
+_URL_FICTIVE = "https://agenda.example.invalid/prive/0123abcd/basic.ics"
+
+
+def _agenda_indisponible(monkeypatch) -> None:
+    from facturation import agenda
+
+    def indisponible(profil_):
+        raise agenda.AgendaIndisponible(f"agenda injoignable ({_URL_FICTIVE})")
+
+    monkeypatch.setattr(agenda, "telecharger_ics", indisponible)
+    monkeypatch.setattr(prp(), "telecharger_ics", indisponible, raising=False)
+
+
+def _options(tmp_path: Path, p, seances=SEANCES_STANDARD) -> tuple[str, ...]:
+    fichier = tmp_path / f"agenda_{len(list(tmp_path.glob('agenda_*.ics')))}.ics"
+    fichier.write_bytes(ics(seances))
+    return ("--fichier", str(fichier), "--mois", "2026-12", "--profil", str(p.chemin))
+
+
+def test_t_prp_61_commande_preparer_masque_l_adresse_de_l_agenda(tmp_path, capsys, monkeypatch):
+    """T-PRP-61 (constat de revue, moyen) — `facturation preparer` sans `--fichier`, agenda
+    indisponible avec une erreur qui contient l'adresse iCal : code 1, et ni la sortie ni les erreurs
+    n'affichent `https://` (règle non négociable, § 7 d'AGENTS.md) ; garde : « adresse masquée »
+    figure dans le message affiché."""
+    p = installer(tmp_path)
+    _agenda_indisponible(monkeypatch)
+    code = _cli("preparer", "--mois", "2026-12", "--profil", str(p.chemin))
+    sortie = capsys.readouterr()
+
+    assert code == 1
+    assert "https://" not in sortie.out + sortie.err
+    assert "adresse masquée" in sortie.err
+
+
+def test_t_prp_62_echec_a_l_ecriture_de_preparation_json(tmp_path, monkeypatch):
+    """T-PRP-62 (constat de revue, moyen) — L'écriture de `preparation.json` échoue (disque plein
+    simulé) sur une relance où la facture ECO disparaît : `PreparationImpossible`, événement
+    `échec`, et tout `_sorties/2026-12/` hors journal reste identique octet pour octet (ni aperçu
+    réécrit ou supprimé, ni copie ajoutée à `historique/`) : § 4, « la préparation précédente reste
+    identique octet pour octet »."""
+    P = prp()
+    p = installer(tmp_path)
+    _lancer(p)
+    dossier = _dossier(p)
+    avant = _contenu_du_dossier(dossier, sauf=("journal.jsonl",))
+    vraie = fichiers.ecrire_json_atomique
+
+    def disque_plein(chemin, donnees):
+        if Path(chemin).name == "preparation.json":
+            raise OSError(28, "plus de place sur le disque (simulé)")
+        return vraie(chemin, donnees)
+
+    monkeypatch.setattr(fichiers, "ecrire_json_atomique", disque_plein)
+    with pytest.raises(P.PreparationImpossible):
+        _lancer(p, ics(seances_sauf("eco-1", "eco-2")))
+
+    assert _contenu_du_dossier(dossier, sauf=("journal.jsonl",)) == avant
+    evenements = journal.lire_evenements(chemins.journal_mois(p, MOIS), types=["preparation"])
+    assert [e["statut"] for e in evenements] == ["ok", "échec"]
+
+
+def test_t_prp_63_echec_du_journal_apres_l_ecriture(tmp_path, monkeypatch):
+    """T-PRP-63 (constat de revue, faible) — L'événement `preparation` / `ok` ne s'écrit pas (erreur
+    disque simulée) : le résultat annoncé correspond au disque. Ou bien la préparation réussit et
+    `preparation.json` est la nouvelle ; ou bien `PreparationImpossible` est levée et la préparation
+    précédente est restée identique octet pour octet (jamais un échec annoncé sur une préparation
+    déjà remplacée)."""
+    P = prp()
+    p = installer(tmp_path)
+    _lancer(p)
+    dossier = _dossier(p)
+    avant = _contenu_du_dossier(dossier, sauf=("journal.jsonl",))
+    vraie = journal.ajouter_evenement
+
+    def journal_en_panne(chemin, type_, **donnees):
+        if type_ == "preparation" and donnees.get("statut") == "ok":
+            raise OSError(5, "erreur d'écriture du journal (simulée)")
+        return vraie(chemin, type_, **donnees)
+
+    monkeypatch.setattr(journal, "ajouter_evenement", journal_en_panne)
+    agenda_v2 = ics(seances_sauf("eco-1", "eco-2"))
+    try:
+        nouvelle = _lancer(p, agenda_v2)
+    except P.PreparationImpossible:
+        assert _contenu_du_dossier(dossier, sauf=("journal.jsonl",)) == avant, (
+            "échec annoncé alors que la préparation précédente a été remplacée")
+    else:
+        assert P.lire_preparation(p, MOIS).empreinte_agenda == nouvelle.empreinte_agenda
+
+
+def test_t_prp_64_preparation_partielle_garde_les_autres_ecoles(tmp_path):
+    """T-PRP-64 (constat de revue, moyen) — Après une préparation complète, `lancer_preparation(…,
+    ecoles=["ECO"])` (`preparer --ecoles ECO`, préparation anticipée de F-20) ne retire pas les
+    autres écoles : ABC-2026-12 reste dans `preparation.json` avec la même empreinte (sa validation
+    reste valable pour F-17), son aperçu est conservé, et aucune différence « facture disparue » ne
+    la donne pour vide."""
+    P = prp()
+    p = installer(tmp_path)
+    abc = brouillon(_lancer(p), "ABC-2026-12")
+    apercu_abc = _dossier(p) / "apercus" / "ABC-2026-12.txt"
+    assert apercu_abc.is_file()
+
+    partielle = _lancer(p, ecoles=["ECO"])
+    relue = P.lire_preparation(p, MOIS)
+    disparues = [d for d in (*partielle.differences, *relue.differences) if d.nature == "facture disparue"]
+    assert disparues == []
+    assert "ECO-2026-12" in identifiants(relue)
+    assert "ABC-2026-12" in identifiants(relue), identifiants(relue)
+    assert brouillon(relue, "ABC-2026-12").empreinte == abc.empreinte
+    assert apercu_abc.is_file()
+
+
+def test_t_prp_65_option_ecoles_vide(tmp_path, capsys):
+    """T-PRP-65 (constat de revue, moyen) — `facturation preparer --ecoles ","` (aucun code) est une
+    erreur d'usage (code 2, § 1.6) : la préparation précédente n'est pas remplacée par une
+    préparation sans brouillon."""
+    p = installer(tmp_path)
+    options = _options(tmp_path, p)
+    assert _cli("preparer", *options) == 3
+    precedente = (_dossier(p) / "preparation.json").read_bytes()
+
+    assert _cli("preparer", "--ecoles", ",", *options) == 2
+    assert (_dossier(p) / "preparation.json").read_bytes() == precedente
+
+
+def test_t_prp_66_cellule_de_duree_dans_correspondances(tmp_path, capsys):
+    """T-PRP-66 (constat de revue, moyen) — Une cellule de durée (format [h]:mm, lue en `timedelta`)
+    dans la ligne de `Correspondances` d'une école « Plus tard » : `facturation preparer` ne lève pas
+    de `TypeError` brute (trace Python). Ou bien la préparation réussit (code 3, `preparation.json`
+    relisible), ou bien elle échoue proprement : code 1, événement `échec` au journal."""
+    from tests.aide_preparation import correspondances_standard
+
+    corr = [{**c, "Valeur": timedelta(hours=30)} if c["École"] == "FUT" else c for c in correspondances_standard()]
+    p = installer(tmp_path, correspondances=corr)
+    code = _cli("preparer", *_options(tmp_path, p))
+    sortie = capsys.readouterr()
+
+    assert "Traceback" not in sortie.err
+    assert code in (1, 3), code
+    if code == 1:
+        evenements = journal.lire_evenements(chemins.journal_mois(p, MOIS), types=["preparation"])
+        assert evenements and evenements[-1]["statut"] == "échec"
+    else:
+        assert prp().lire_preparation(p, MOIS) is not None
+
+
+def test_t_prp_67_preparation_modifiee_a_la_main(tmp_path):
+    """T-PRP-67 (constat de revue, faible) — `lire_preparation` refuse un `preparation.json` dont un
+    brouillon ne correspond plus à son empreinte (heures modifiées à la main) : `PreparationIllisible`
+    « ne correspond plus à son empreinte ». (Garde jusque-là non testée.)"""
+    P = prp()
+    p = installer(tmp_path)
+    _lancer(p)
+    chemin = _dossier(p) / "preparation.json"
+    donnees = json.loads(chemin.read_text(encoding="utf-8"))
+    donnees["brouillons"][0]["lignes"][0]["heures"] = 30.0
+    chemin.write_text(json.dumps(donnees, ensure_ascii=False), encoding="utf-8")
+
+    with pytest.raises(P.PreparationIllisible, match="empreinte"):
+        P.lire_preparation(p, MOIS)
+
+
+def test_t_prp_68_apercu_d_une_facture_disparue_supprime(tmp_path):
+    """T-PRP-68 (constat de revue, faible) — Relance complète sans les séances d'ECO : l'aperçu de la
+    facture disparue est supprimé, `apercus/` ne contient plus que ABC-2026-12.txt. (Garde jusque-là
+    non testée.)"""
+    p = installer(tmp_path)
+    _lancer(p)
+    assert (_dossier(p) / "apercus" / "ECO-2026-12.txt").is_file()
+    _lancer(p, ics(seances_sauf("eco-1", "eco-2")))
+    assert sorted(f.name for f in (_dossier(p) / "apercus").iterdir()) == ["ABC-2026-12.txt"]
+
+
+def test_t_prp_69_code_3_pour_une_facture_seulement_bloquee(tmp_path, capsys):
+    """T-PRP-69 (constat de revue, faible) — Aucun créneau à classer, ECO validée, ABC bloquée (bon
+    de commande requis) : `facturation preparer` rend 3 pour la seule facture bloquée. (T-PRP-19
+    rendait 3 à cause de la file à classer.)"""
+    regles = [regle("ABC", **{"Bon de commande requis": "oui"}), regle("ECO"), regle("FUT", "Plus tard")]
+    p = installer(tmp_path, regles=regles)
+    options = _options(tmp_path, p, seances_sauf("inconnu-1", "srg-1"))
+    assert _cli("preparer", *options) == 3
+    prep = prp().lire_preparation(p, MOIS)
+    assert brouillon(prep, "ABC-2026-12").statut == "bloqué" and not prep.a_classer
+    ecrire_validation(p, "ECO-2026-12", brouillon(prep, "ECO-2026-12").empreinte)
+
+    assert _cli("preparer", *options) == 3
+
+
+@pytest.mark.parametrize("cas", ["école sans règle", "école en fin de module"])
+def test_t_prp_70_code_3_tant_que_a_faire_demande_une_action(tmp_path, capsys, cas):
+    """T-PRP-70 (constat de revue, moyen ; `💡 [proposé — à valider]`) — Toutes les factures
+    validées, rien à classer, mais « À FAIRE » demande encore une action d'Adrian (école sans règle
+    dont la séance n'est pas facturée ; école en fin de module à préparer à la main) : code 3, pas 0.
+    § 1.6 : 0 = « terminé, rien à faire », 3 = « une action d'Adrian est requise » ; une tâche
+    planifiée (F-20) qui se fie au code laisserait sinon ces séances non facturées. Le § 4 ne cite
+    que les factures et les créneaux : le § 1.6, uniforme pour toutes les commandes, est retenu."""
+    if cas == "école sans règle":
+        p = installer(tmp_path)
+        seances = seances_sauf("inconnu-1")  # srg-1 gardée : SRG est une école sans règle
+    else:
+        p = installer(tmp_path, regles=[regle("ABC"), regle("ECO", Rythme="fin de module"), regle("FUT", "Plus tard")])
+        seances = seances_sauf("inconnu-1", "srg-1")
+    options = _options(tmp_path, p, seances)
+    _cli("preparer", *options)
+    for b in prp().lire_preparation(p, MOIS).brouillons:
+        ecrire_validation(p, b.identifiant, b.empreinte)
+    capsys.readouterr()
+
+    code = _cli("preparer", *options)
+    a_faire = bloc(capsys.readouterr().out, "À FAIRE", "FACTURES")
+    assert "Rien à faire" not in a_faire, a_faire  # garde : « À FAIRE » demande bien une action
+    assert code == 3, a_faire

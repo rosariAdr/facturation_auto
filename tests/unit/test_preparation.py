@@ -1,6 +1,6 @@
 """Préparation multi-écoles des brouillons : logique (F-16a, `facturation/preparation.py` et
-`facturation/decisions.py` ; banque de tests : T-PRP-01 à T-PRP-37 et T-PRP-45 à T-PRP-47, les autres
-dans `tests/integration/test_preparation.py`).
+`facturation/decisions.py` ; banque de tests : T-PRP-01 à T-PRP-37, T-PRP-45 à T-PRP-47 et, pour les
+constats de revue de F-16a, T-PRP-48 à T-PRP-60 ; les autres dans `tests/integration/test_preparation.py`).
 
 Tests d'acceptation écrits avant l'implémentation : chaque test importe `facturation.preparation`
 (ou `facturation.decisions`) lui-même, pour que l'absence du module fasse échouer les tests sans
@@ -72,6 +72,7 @@ from tests.aide_preparation import (
     bloc,
     brouillon,
     changer_coordonnee,
+    changer_info,
     cle,
     cles_facturees,
     correspondance,
@@ -84,6 +85,7 @@ from tests.aide_preparation import (
     identifiants,
     installer,
     ligne_sessions,
+    master_standard,
     preparer,
     prp,
     regle,
@@ -712,12 +714,18 @@ def test_t_prp_22_possible_doublon_avec_sessions_avertit_sans_exclure(tmp_path):
     et une ligne `Sessions` de la même école, le même jour, à d'autres heures (09:00–12:00 contre
     09:00–12:30) : avertissement « possible doublon avec Sessions, ligne N » dans l'aperçu (section
     « À FAIRE »), sans exclure la séance ni bloquer le brouillon. Garde : la ligne `Sessions` d'un
-    autre jour (ligne 3) ne donne aucun avertissement."""
+    autre jour (ligne 3, 04/12) ne donne aucun avertissement, et les séances d'autres jours (abc-2,
+    abc-3) non plus.
+
+    Constat de revue de F-16a : la ligne 3 avait les mêmes heures que les séances (09:00–12:00) ; elle
+    était écartée comme « identique » même sans le filtre de date, et l'assertion négative passait à
+    vide. Elle chevauche désormais (09:00–12:30) : sans le filtre de date, elle et la ligne 2
+    donneraient un avertissement pour abc-1, abc-2 et abc-3 (garde cassée une fois)."""
     a1 = standard("abc-1")
     sessions = [
         ligne_sessions(a1, ecole="ABC", n_facture="R_ABC001", debut_="09:00", fin_="12:30", heures=3.5),
         ligne_sessions(a1._replace(jour="2026-12-04"), ecole="ABC", n_facture="R_ABC001",
-                       debut_="09:00", fin_="12:00"),
+                       debut_="09:00", fin_="12:30", heures=3.5),
     ]
     prep = preparer(installer(tmp_path, sessions=sessions))
 
@@ -728,6 +736,7 @@ def test_t_prp_22_possible_doublon_avec_sessions_avertit_sans_exclure(tmp_path):
     avertissements = textes(abc.avertissements)
     assert "possible doublon avec Sessions, ligne 2" in avertissements
     assert "ligne 3" not in avertissements
+    assert sum(a.startswith("possible doublon") for a in abc.avertissements) == 1, abc.avertissements
     a_faire = bloc(prp().apercu_global(prep), "À FAIRE", "FACTURES")
     assert "possible doublon avec Sessions, ligne 2" in a_faire
 
@@ -1149,3 +1158,287 @@ def test_t_prp_47_preparer_pure_et_deterministe(tmp_path):
     assert une == deux
     assert P.apercu_global(une) == P.apercu_global(deux)
     assert arborescence(tmp_path) == avant
+
+
+# ──────────────────────────────────────────────────────────────────────
+# T-PRP-48 à T-PRP-60 : constats de revue de F-16a (rouges avant le correctif)
+# ──────────────────────────────────────────────────────────────────────
+
+_REGLE_ABC_CT0001 = regle("ABC", **{"N° de contrat": "CT-0001", "Une facture par contrat": "oui"})
+_TARIFS_ABC_CT0001 = [tarif("ABC", "Statistiques", "M1", 60, "CT-0001") if t["École"] == "ABC" else t
+                      for t in tarifs_standard()]
+
+
+@pytest.mark.parametrize("cas", ["école passée à une facture par contrat", "suffixe haché par un contrat voisin"])
+def test_t_prp_48_piece_engagee_protege_ses_seances_si_l_identifiant_change(tmp_path, cas):
+    """T-PRP-48 (constat de revue, haut) — Une pièce « en émission » n'a pas encore écrit ses séances
+    dans `Sessions`. Si l'identifiant de son brouillon change ensuite (l'école passe à « Une facture
+    par contrat = oui » ; une règle « CT 0001 » rend haché le suffixe de « CT-0001 »), ses séances ne
+    repartent jamais dans un nouveau brouillon : aucune `cle_seance` de la pièce dans les brouillons
+    (§ 4 étape 4 : « jamais régénérés » ; sinon, double facturation). La pièce reste listée dans
+    `deja_emises`. Garde : sans la pièce, ces séances sont facturées sous le nouvel identifiant."""
+    if cas == "école passée à une facture par contrat":
+        avant, identifiant = {}, "ABC-2026-12"
+        apres = dict(regles=[_REGLE_ABC_CT0001, regle("ECO"), regle("FUT", "Plus tard")], tarifs=_TARIFS_ABC_CT0001)
+    else:
+        avant = dict(regles=[_REGLE_ABC_CT0001, regle("ECO"), regle("FUT", "Plus tard")], tarifs=_TARIFS_ABC_CT0001)
+        identifiant = "ABC-2026-12-CT0001"
+        voisin = regle("ABC", **{"N° de contrat": "CT 0001", "Une facture par contrat": "oui"})
+        apres = dict(regles=[_REGLE_ABC_CT0001, voisin, regle("ECO"), regle("FUT", "Plus tard")],
+                     tarifs=_TARIFS_ABC_CT0001)
+    p = installer(tmp_path, **avant)
+    engage = brouillon(preparer(p), identifiant)
+    cles_piece = {l.cle_seance for l in engage.lignes}
+    assert cles_piece == {cle(standard(u)) for u in ("abc-1", "abc-2", "abc-3")}
+    ecrire_piece(p, "R_ABC001", identifiant=identifiant, empreinte=engage.empreinte, brouillon_=engage)
+
+    sans_piece = preparer(installer(tmp_path / "garde", **apres))
+    assert identifiant not in identifiants(sans_piece)
+    assert cles_piece <= cles_facturees(sans_piece)
+
+    master_standard(p.racine, **apres)
+    prep = preparer(p)
+    assert not cles_piece & cles_facturees(prep), [
+        (b.identifiant, b.statut, sorted(_par_uid(b))) for b in prep.brouillons]
+    assert "R_ABC001" in {n for _, n, _ in prep.deja_emises}
+
+
+def _abc_deux_contrats(statut_ct2: str, **colonnes_ct2) -> dict:
+    """`_contrats_abc` dont la ligne du contrat CT-0002 porte un autre « Statut lot » (§ 16)."""
+    donnees = _contrats_abc()
+    donnees["regles"][1] = regle("ABC", statut_ct2, **{"N° de contrat": "CT-0002", "Une facture par contrat": "oui",
+                                                        **colonnes_ct2})
+    return donnees
+
+
+@pytest.mark.parametrize(
+    "statut, colonnes", [("Hors facturation", {}), ("Plus tard", {"Rythme": "fin de module"})],
+    ids=["contrat hors facturation", "contrat plus tard en fin de module"],
+)
+def test_t_prp_49_statut_lot_de_chaque_ligne_de_contrat(tmp_path, statut, colonnes):
+    """T-PRP-49 (constat de revue, haut ; `💡 [proposé — à valider]`, le contrat se tait) — Depuis le
+    § 16, chaque ligne de contrat porte son « Statut lot ». La séance d'un contrat « Hors facturation »
+    ou « Plus tard » d'une école du lot n'est jamais dans un brouillon prêt (hors lot, ou blocage qui
+    demande de trancher), sinon double facture si ce contrat est facturé à la main. Et la ligne hors
+    lot en « fin de module » ne retient pas le contrat « Lot 1 » : CT-0001 est préparé."""
+    p = installer(tmp_path, **_abc_deux_contrats(statut, **colonnes))
+    prep = preparer(p, ics([standard("abc-1"), SEANCE_M2, standard("eco-1")]))
+
+    assert "ABC" not in {e.ecole for e in prep.ecoles_non_preparees}, prep.ecoles_non_preparees
+    assert "abc-1" in _par_uid(brouillon(prep, "ABC-2026-12-CT0001"))
+    prets = [b.identifiant for b in prep.brouillons if b.statut == "prêt" and "abc-m2" in _par_uid(b)]
+    assert prets == [], f"séance d'un contrat « {statut} » dans un brouillon prêt : {prets}"
+
+
+@pytest.mark.parametrize(
+    "cas, libelle",
+    [("SIRET vide", "SIRET"), ("IBAN vide", "IBAN"), ("BIC vide", "BIC"),
+     ("adresse de l'émetteur vide", "Adresse L1"), ("email de l'émetteur vide", "Email"),
+     ("téléphone de l'émetteur vide", "Téléphone")],
+)
+def test_t_prp_50_valeur_d_une_mention_obligatoire_vide_bloque(tmp_path, cas, libelle):
+    """T-PRP-50 (constat de revue, haut) — La ligne est présente mais sa valeur est vide (cellule
+    réellement vidée) : SIRET, IBAN ou BIC de la ligne `Info`, adresse, email ou téléphone de
+    l'émetteur (ADR030 §1 et §10). Tous les brouillons sont bloqués, par un blocage qui nomme
+    l'onglet Coordonnées et la donnée manquante ; aucune exception."""
+    p = installer(tmp_path)
+    if libelle in ("SIRET", "IBAN", "BIC"):
+        changer_info(p.master, "ROSARI", libelle, None)
+    else:
+        changer_coordonnee(p.master, "Émetteur", "ROSARI", libelle, None)
+    prep = preparer(p)
+
+    assert identifiants(prep) == {"ABC-2026-12", "ECO-2026-12"}
+    for b in prep.brouillons:
+        assert b.statut == "bloqué", (cas, b.identifiant, b.info, b.emetteur)
+        assert any("Coordonnées" in x and libelle in x for x in b.blocages), b.blocages
+
+
+def test_t_prp_51_ligne_sessions_illisible_ne_laisse_pas_refacturer_en_silence(tmp_path):
+    """T-PRP-51 (constat de revue, moyen) — Une ligne `Sessions` illisible (Date_séance « début déc »)
+    qui facture peut-être abc-1 ne se réduit pas à un avertissement noyé : le brouillon ABC est
+    bloqué, ou « À FAIRE » nomme la ligne (onglet Sessions, ligne 2). Garde : la même ligne lisible
+    retire abc-1 (« exacte »)."""
+    a1 = standard("abc-1")
+    lisible = ligne_sessions(a1, ecole="ABC", n_facture="R_ABC001", debut_="09:00", fin_="12:00")
+    prep = preparer(installer(tmp_path, sessions=[{**lisible, "Date_séance": "début déc"}]))
+
+    abc = brouillon(prep, "ABC-2026-12")
+    a_faire = bloc(prp().apercu_global(prep), "À FAIRE", "FACTURES")
+    assert abc.statut == "bloqué" or re.search(r"Sessions.*ligne 2", a_faire), (abc.blocages, a_faire)
+
+    garde = preparer(installer(tmp_path / "lisible", sessions=[lisible]))
+    assert cle(a1) in {d.cle_seance for d in garde.deja_facturees}
+
+
+def test_t_prp_52_reference_de_tarif_differente_du_contrat_de_la_regle(tmp_path):
+    """T-PRP-52 (constat de revue, moyen) — Sans « Une facture par contrat », la ligne de tarif reliée
+    à CT-0002 sur une école dont la seule règle porte CT-0001 : blocage qui cite les deux références
+    et Règles_facturation (la mention du contrat ne peut pas être fausse, ADR030 §3 ; même écart
+    bloquant qu'en facturation par contrat). Garde : tarif relié à CT-0001 → prêt, contrat CT-0001."""
+    regles = [regle("ABC", **{"Délai de paiement": "45 jours fin de mois", "N° de contrat": "CT-0001"}), regle("ECO"),
+              regle("FUT", "Plus tard")]
+    tarifs = [tarif("ABC", "Statistiques", "M1", 60, "CT-0002") if t["École"] == "ABC" else t for t in tarifs_standard()]
+    prep = preparer(installer(tmp_path, regles=regles, tarifs=tarifs))
+
+    abc = brouillon(prep, "ABC-2026-12")
+    assert abc.statut == "bloqué", (abc.contrat, abc.blocages)
+    assert any("CT-0001" in x and "CT-0002" in x and "Règles_facturation" in x for x in abc.blocages), abc.blocages
+    assert brouillon(prep, "ECO-2026-12").statut == "prêt"
+
+    garde = brouillon(preparer(installer(tmp_path / "garde", regles=regles, tarifs=_TARIFS_ABC_CT0001)), "ABC-2026-12")
+    assert (garde.statut, garde.contrat) == ("prêt", "CT-0001")
+
+
+def test_t_prp_53_cle_tarif_d_une_autre_ecole(tmp_path):
+    """T-PRP-53 (constat de revue, moyen) — Une ligne de `Correspondances` de l'école ABC dont la clé
+    tarif est celle d'ECO (« ECO|Économie|L3 ») ne facture pas ABC au taux d'ECO : brouillon ABC
+    bloqué, blocage qui cite la clé et l'onglet Correspondances ; ECO reste prêt. Garde : avec la clé
+    ABC, le brouillon est prêt (T-PRP-01)."""
+    corr = [correspondance("#ABC-M1-STATS", "code", "ABC", "Statistiques", "M1", cle_tarif="ECO|Économie|L3")
+            if c["École"] == "ABC" else c for c in correspondances_standard()]
+    prep = preparer(installer(tmp_path, correspondances=corr))
+
+    abc = brouillon(prep, "ABC-2026-12")
+    assert abc.statut == "bloqué", [(l.uid, l.cle_tarif, l.taux) for l in abc.lignes]
+    assert any("ECO|Économie|L3" in x and "Correspondances" in x for x in abc.blocages), abc.blocages
+    assert brouillon(prep, "ECO-2026-12").statut == "prêt"
+
+
+@pytest.mark.parametrize("mode", ["forfait", "coefficient"])
+def test_t_prp_54_heures_nulles_bloquent(tmp_path, mode):
+    """T-PRP-54 (constat de revue, moyen) — Une correspondance à 0 h (forfait ou coefficient 0, que
+    `heures_facturables` accepte) ne donne pas un brouillon prêt à 0,00 € que `facture.charger_spec`
+    refuserait (§ 18.3, heures ≤ 0) : blocage qui parle des heures et nomme Correspondances. Garde
+    générale : la spec de chaque brouillon prêt passe `charger_spec` puis `controler_spec`."""
+    from facturation import facture
+
+    corr = [correspondance("#ABC-M1-STATS", "code", "ABC", "Statistiques", "M1", mode=mode, valeur=0)
+            if c["École"] == "ABC" else c for c in correspondances_standard()]
+    p = installer(tmp_path, correspondances=corr)
+    prep = preparer(p)
+
+    abc = brouillon(prep, "ABC-2026-12")
+    assert abc.statut == "bloqué", [(l.uid, l.heures) for l in abc.lignes]
+    bl = textes(abc.blocages)
+    assert re.search(r"heures", bl, re.IGNORECASE) and "Correspondances" in bl, abc.blocages
+    for b in prep.brouillons:
+        if b.statut != "prêt":
+            continue
+        chemin = tmp_path / f"spec_{b.identifiant}.json"
+        chemin.write_text(json.dumps(b.spec(b.numero_probable), ensure_ascii=False), encoding="utf-8")
+        facture.controler_spec(facture.charger_spec(chemin), prefixe=p.prefixe_facture, racine=p.racine)
+
+
+_ABC_INTITULE_MODIFIE = [s._replace(intitule="Statistiques M1 (salle 2)") if s.uid == "abc-1" else s
+                         for s in SEANCES_STANDARD]
+_ABC_MODULE_RENOMME = [
+    correspondance("#ABC-M1-STATS", "code", "ABC", "Statistiques appliquées", "M1", cle_tarif="ABC|Statistiques|M1")
+    if c["École"] == "ABC" else c for c in correspondances_standard()
+]
+_ABC_ECOLE_RENOMMEE = [{**e, "École": "ÉCOLE FICTIVE A RENOMMÉE"} if e["Code facturation"] == "ABC" else e
+                       for e in ecoles_standard()]
+CAS_EMPREINTE_SANS_DIFFERENCE = {
+    "intitulé": ({"seances": _ABC_INTITULE_MODIFIE}, r"intitulé|salle 2"),
+    "libellé de la ligne": ({"correspondances": _ABC_MODULE_RENOMME}, r"libellé|Statistiques appliquées"),
+    "libellé de l'école": ({"ecoles": _ABC_ECOLE_RENOMMEE}, r"libellé|RENOMMÉE"),
+}
+
+
+@pytest.mark.parametrize("champ", list(CAS_EMPREINTE_SANS_DIFFERENCE))
+def test_t_prp_55_tout_changement_d_empreinte_a_sa_difference(tmp_path, champ):
+    """T-PRP-55 (constat de revue, moyen) — L'intitulé d'une séance, le libellé (Module) d'une ligne
+    ou le libellé de l'école changent l'empreinte, donc font « à revalider » : `differences` rapporte
+    alors au moins une différence du brouillon, qui nomme le champ (ou sa nouvelle valeur) ; sinon
+    l'aperçu dit « CHANGEMENTS : aucun » et pousse à revalider sans relire."""
+    cas, motif = CAS_EMPREINTE_SANS_DIFFERENCE[champ]
+    ancienne = _preparation_du_cas(tmp_path, "ancienne", {})
+    nouvelle = _preparation_du_cas(tmp_path, "nouvelle", cas)
+    assert brouillon(ancienne, "ABC-2026-12").empreinte != brouillon(nouvelle, "ABC-2026-12").empreinte
+
+    propres = [d for d in prp().differences(ancienne, nouvelle) if d.identifiant == "ABC-2026-12"]
+    assert propres, f"empreinte de ABC-2026-12 changée ({champ}) sans aucune différence rapportée"
+    assert re.search(motif, textes(f"{d.nature} : {d.detail}" for d in propres), re.IGNORECASE), propres
+
+
+def test_t_prp_56_periode_deja_facturee_saisie_en_date(tmp_path):
+    """T-PRP-56 (constat de revue, haut) — Excel en français convertit la saisie « Déc 2026 » de
+    `Factures.Période` en date (01/12/2026) : la garde « période déjà facturée hors outil » la
+    reconnaît et bloque ABC (Q-D6). Garde : la date du 01/11/2026 (ECO) ne bloque pas."""
+    factures = [_facture_registre("R_ABC004", "ABC", datetime(2026, 12, 1)),
+                _facture_registre("R_ECO004", "ECO", datetime(2026, 11, 1))]
+    prep = preparer(installer(tmp_path, factures=factures))
+
+    abc = brouillon(prep, "ABC-2026-12")
+    assert abc.statut == "bloqué" and re.search(r"déjà facturée", textes(abc.blocages), re.IGNORECASE), abc.blocages
+    assert not re.search(r"déjà facturée", textes(brouillon(prep, "ECO-2026-12").blocages), re.IGNORECASE)
+
+
+@pytest.mark.parametrize("colonne", ["École", "Date_séance"])
+def test_t_prp_57_ligne_sessions_sans_ecole_ou_sans_date(tmp_path, colonne):
+    """T-PRP-57 (constat de revue, moyen) — Une ligne `Sessions` sans École (ou sans Date_séance), au
+    N° et aux heures d'abc-1, n'est pas ignorée en silence par l'anti-doublon (ADR005) : abc-1 est
+    retirée (`deja_facturees`), ou le brouillon ABC signale la ligne 2 de Sessions."""
+    a1 = standard("abc-1")
+    ligne = {**ligne_sessions(a1, ecole="ABC", n_facture="R_ABC001", debut_="09:00", fin_="12:00"), colonne: None}
+    prep = preparer(installer(tmp_path, sessions=[ligne]))
+
+    abc = brouillon(prep, "ABC-2026-12")
+    signalee = re.search(r"Sessions.*ligne 2", textes([*abc.blocages, *abc.avertissements]))
+    assert cle(a1) in {d.cle_seance for d in prep.deja_facturees} or signalee, (abc.blocages, abc.avertissements)
+
+
+@pytest.mark.parametrize("cas", ["N° de contrat de la règle", "Réf. contrat du tarif"])
+def test_t_prp_58_periode_deja_facturee_sans_contrat_dans_factures(tmp_path, cas):
+    """T-PRP-58 (constat de revue, moyen) — Une facture faite à la main, inscrite dans `Factures` sans
+    Contrat (cas des lignes historiques, Q-D6), pour la période d'un brouillon qui cite un contrat
+    (N° de la règle, ou Réf. contrat commune des tarifs) : au moins un avertissement « période déjà
+    facturée » (ou un blocage). `💡 [proposé — à valider]` : « vide égal vide » est tenu à la lettre
+    pour le blocage ; un contrat vide dans `Factures` ne doit pas rendre la garde muette."""
+    if cas == "N° de contrat de la règle":
+        regles = [regle("ABC", **{"Délai de paiement": "45 jours fin de mois", "N° de contrat": "CT-0009"}),
+                  regle("ECO"), regle("FUT", "Plus tard")]
+        surcharges, identifiant, n, ecole = dict(regles=regles), "ABC-2026-12", "R_ABC004", "ABC"
+    else:
+        tarifs = [tarif("ECO", "Économie", "L3", "45 €/h", "CT-0003") if t["École"] == "ECO" else t
+                  for t in tarifs_standard()]
+        surcharges, identifiant, n, ecole = dict(tarifs=tarifs), "ECO-2026-12", "R_ECO004", "ECO"
+    prep = preparer(installer(tmp_path, factures=[_facture_registre(n, ecole, "Déc 2026")], **surcharges))
+
+    b = brouillon(prep, identifiant)
+    assert b.contrat, "garde : le brouillon doit citer un contrat"
+    assert re.search(r"déjà facturée", textes([*b.blocages, *b.avertissements]), re.IGNORECASE), (
+        b.blocages, b.avertissements)
+
+
+def test_t_prp_59_seance_exclue_non_reconnue_reste_visible(tmp_path):
+    """T-PRP-59 (constat de revue, faible ; `💡 [proposé — à valider]`) — Une séance non reconnue
+    exclue par décision (« Réunion pédagogique ») ne disparaît pas de tout l'aperçu global : seules
+    les exclusions d'une école connue y étaient reprises (avertissement du brouillon). Garde : la
+    décision s'applique (ni à classer ni facturée)."""
+    p = installer(tmp_path)
+    inconnu = standard("inconnu-1")
+    ecrire_decision(p, "exclure", cle(inconnu), {"raison": "réunion interne"})
+    prep = preparer(p)
+
+    assert "inconnu-1" not in {a.seance.uid for a in prep.a_classer} | uids_factures(prep)
+    assert "Réunion pédagogique" in prp().apercu_global(prep)
+
+
+def test_t_prp_60_decision_classer_vers_une_ecole_inconnue(tmp_path):
+    """T-PRP-60 (constat de revue, faible) — Une décision `classer` dont l'école n'existe plus dans
+    Écoles ne fait pas échouer toute la préparation (« une erreur propre à une école ne retient
+    jamais les autres ») : la séance revient dans la file à classer, avec une raison qui cite la
+    décision ou l'école ; ABC et ECO restent prêts."""
+    p = installer(tmp_path)
+    inconnu = standard("inconnu-1")
+    ecrire_decision(p, "classer", cle(inconnu), {
+        "ecole": "ZZ9 Inconnue", "module": "Réunion", "promotion": "M1", "cle_tarif": "ZZ9|Réunion|M1",
+        "mode_heures": "agenda", "valeur": "",
+    })
+    prep = preparer(p)
+
+    assert {brouillon(prep, i).statut for i in ("ABC-2026-12", "ECO-2026-12")} == {"prêt"}
+    raisons = {a.seance.uid: a.raison for a in prep.a_classer}
+    assert "inconnu-1" in raisons and re.search(r"ZZ9|décision", raisons["inconnu-1"]), raisons
+    assert "inconnu-1" not in uids_factures(prep)

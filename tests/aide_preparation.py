@@ -216,16 +216,32 @@ def _feuille_coordonnees(chemin_master: Path):
 
 
 def changer_coordonnee(chemin_master: Path, type_: str, code: str, colonne: str, valeur: Any) -> None:
-    """Modifie une cellule de la ligne (Type, Code) de `Coordonnées`, par le nom de la colonne."""
+    """Modifie une cellule de la ligne (Type, Code) de `Coordonnées`, par le nom de la colonne.
+
+    `valeur=None` vide réellement la cellule : `ws.cell(row, column, value=None)` laisserait
+    l'ancienne valeur (openpyxl ignore `value=None`), d'où l'affectation de `.value`."""
     wb, ws = _feuille_coordonnees(chemin_master)
     entetes = [c.value for c in ws[1]]
     indice = entetes.index(colonne) + 1
     for ligne in ws.iter_rows(min_row=2):
         if ligne[0].value == type_ and ligne[1].value == code:
-            ws.cell(row=ligne[0].row, column=indice, value=valeur)
+            ws.cell(row=ligne[0].row, column=indice).value = valeur
             break
     else:
         raise AssertionError(f"ligne {type_} / {code} absente de Coordonnées")
+    wb.save(chemin_master)
+
+
+def changer_info(chemin_master: Path, entite: str, nom: str, valeur: Any) -> None:
+    """Modifie la valeur (colonne « Adresse L1 ») de la ligne `Info` / `<nom>` de l'entité ; None la vide."""
+    wb, ws = _feuille_coordonnees(chemin_master)
+    indice = [c.value for c in ws[1]].index("Adresse L1") + 1
+    for ligne in ws.iter_rows(min_row=2):
+        if ligne[0].value == "Info" and ligne[1].value == entite and ligne[2].value == nom:
+            ws.cell(row=ligne[0].row, column=indice).value = valeur
+            break
+    else:
+        raise AssertionError(f"ligne Info / {nom} absente de Coordonnées")
     wb.save(chemin_master)
 
 
