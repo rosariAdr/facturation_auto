@@ -6,8 +6,8 @@
 Lecture seule du MASTER et de l'agenda ; le rapport (.txt et .csv) est écrit sous
 `<racine>/<ENTITE>/_sorties/audits/`.
 
-Codes de sortie (contrats des vagues 3 à 5, § 1.6) : 0 sans écart, 3 avec écarts, 1 en cas
-d'erreur (profil, MASTER, agenda, racine, écriture), 2 pour une erreur d'usage.
+Codes de sortie (contrats des vagues 3 à 5, § 1.6) : 0 sans écart, 3 avec écarts ou avec des lignes de
+`Sessions` illisibles ou sans date de séance (💡, T-AUD-61), 1 en cas d'erreur (profil, MASTER, agenda, racine, écriture), 2 pour une erreur d'usage.
 
 Lectures retenues (`💡 [proposé — à valider]`) : période par défaut du 1er du mois M−3 à hier
 (Q-I2), « aujourd'hui » étant la date du poste ; `--mois` ne se combine pas avec `--du` / `--au`,

@@ -248,8 +248,12 @@ class RapportAudit:
 
     @property
     def code_retour(self) -> int:
-        """0 sans écart, 3 avec écarts (une action d'Adrian est requise, § 1.6)."""
-        return 3 if self.ecarts else 0
+        """0 sans écart, 3 avec écarts (une action d'Adrian est requise, § 1.6).
+
+        💡 [proposé — à valider] : une ligne de `Sessions` illisible ou sans date de séance ne peut pas
+        être rapprochée de l'agenda ; elle demande aussi une action et donne donc 3 (T-AUD-61).
+        """
+        return 3 if (self.ecarts or self.lignes_illisibles or self.lignes_non_datees) else 0
 
 
 @dataclass(frozen=True)

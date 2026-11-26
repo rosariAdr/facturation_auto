@@ -1269,3 +1269,28 @@ def test_t_aud_59_volume_non_compare_quand_une_seance_est_incalculable():
     ]
     rapport = _auditer(seances, _master(sessions, correspondances=correspondances))
     assert [(e.nature, e.seance) for e in rapport.ecarts] == [(INCALCULABLES, seances[1])], rapport.ecarts
+
+
+@pytest.mark.parametrize("ligne", ["illisible", "sans-date"])
+def test_t_aud_61_lignes_sessions_inexploitables_code_3(tmp_path, ligne):
+    """T-AUD-61 — 💡 [proposé — à valider] (décision de l'orchestrateur sur le constat 5 de la revue de F-19) :
+    une ligne de `Sessions` illisible ou sans date de séance ne peut pas être rapprochée de l'agenda ; l'audit
+    n'est donc pas « sans écart » et `code_retour` vaut 3 (une action d'Adrian est requise, § 1.6), même sans
+    autre écart. Garde : sans cette ligne, le même audit rend 0."""
+    saine = _ses("ABC", date(2026, 9, 15), "09:00", "12:30", 3.5)
+    fautive = (_ses("ABC", "fin sept", "09:00", "12:30", 3.5) if ligne == "illisible"
+               else _ses("ABC", None, "09:00", "12:30", 3.5))
+    seances = [_seance(date(2026, 9, 15), "09:00", "12:30", I_ABC)]
+
+    chemin = creer_master(tmp_path / "avec", regles=REGLES, correspondances=CORRESPONDANCES, ecoles=ECOLES,
+                          sessions=[saine, fautive])
+    rapport = _auditer(seances, lire_master(chemin))
+    assert list(rapport.ecarts) == []
+    assert rapport.lignes_illisibles or rapport.lignes_non_datees
+    assert rapport.code_retour == 3
+
+    chemin = creer_master(tmp_path / "sans", regles=REGLES, correspondances=CORRESPONDANCES, ecoles=ECOLES,
+                          sessions=[saine])
+    temoin = _auditer(seances, lire_master(chemin))
+    assert list(temoin.ecarts) == [] and not temoin.lignes_illisibles and not temoin.lignes_non_datees
+    assert temoin.code_retour == 0
