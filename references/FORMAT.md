@@ -20,7 +20,7 @@ Conséquence : le gabarit peut être versionné et partagé sans rien exposer, e
 
 | Zone | Cellules | Rempli par |
 |---|---|---|
-| Bandeau titre | `B2:S3` | `apply_metadata` (titre + date d'émission) |
+| Bandeau titre | `B2:R3` (refusionné par le module, dans la zone d'impression) | `apply_metadata` (titre + date d'émission) |
 | Encadré émetteur | `C7:E11` | `apply_emetteur` (5 lignes) |
 | Encadré destinataire | `M7:P10` | `apply_destinataire` (4 lignes) |
 | Bon de commande | `C14` + `D14:H14` | `apply_metadata(ref_bon_commande=…)` |
@@ -74,7 +74,9 @@ La zone d'impression va jusqu'à la ligne 94 (plus le décalage). Pas de ligne �
 
 ## Longueur de la facture
 
-- La **facture pilote tient sur une page** (ADR030). Aujourd'hui, au-delà d'environ 17 séances, les mentions passent en page 2 (T-FMT-07, à corriger par F-18).
+- La **facture pilote tient sur une page** (ADR030) : jusqu'à 18 séances, jours affichés ou masqués, la facture est ajustée à une page A4 portrait (`apply_print_setup`).
+- Au-delà, l'impression reste ajustée en largeur et le module pose des **sauts de page manuels** entre deux lignes de cours : le nombre de pages vaut le nombre de sauts plus un (vérifié de 1 à 120 séances). L'en-tête du tableau se répète en haut de chaque page ; les fusions école, promotion et libellé sont coupées au saut, avec leur texte et leurs bordures repris.
+- Le bloc du bas (de « Total HT » à l'indemnité) n'est jamais coupé, et la dernière page garde au moins 3 lignes de cours au-dessus du total : de 19 à 25 séances (et vers 50), le bloc part donc sur une nouvelle page, en laissant un blanc sur la précédente.
 - Quand une école l'accepte, le regroupement « une ligne par jour et par cours » (règle `Regroupement` de `Règles_facturation`) réduit la longueur en gardant les dates visibles.
 - La règle pour les factures de plus d'une page sera décidée après le pilote.
 
@@ -100,11 +102,15 @@ La zone d'impression va jusqu'à la ligne 94 (plus le décalage). Pas de ligne �
 
 **Sans `apply_print_setup`, l'export PDF coupe les colonnes Taux et Total** sur une seconde page : 18 colonnes ne tiennent pas en portrait par défaut. La fonction force portrait + ajustement à une page de large.
 
-**Au-delà de la 7e ligne de séances, les colonnes Heures, Taux et Total perdent leur format nombre** (T-FMT-07). Contourné à la main en octobre 2026 ; correction prévue par F-18.
+**Corrigé par F-18 : les formats de nombre se perdaient au-delà de la 7e ligne de séances** (T-FMT-07). `place_sessions` recopie les formats de la ligne 20 sur toutes les lignes de cours, lignes insérées comprises.
 
-**Une dénomination longue est coupée dans l'encadré destinataire (`M7`)**, et le libellé « Bon de commande : » est tronqué en `C14` + `D14:H14`. Contournés à la main en octobre 2026 ; à corriger avec F-18.
+**Corrigé par F-18 : textes coupés.** La colonne C passe à une largeur de 29 pour que les libellés de `C14` à `C17` tiennent en entier, et les colonnes de marge A et B, vides, passent à 4 pour garder l'échelle d'impression. Une dénomination longue du client passe à la ligne en `M7`, avec une hauteur de ligne ajustée. Quand la colonne Jour est masquée, sa largeur revient au libellé.
 
-**Au-delà de 60 séances, seules les mentions suivent le décalage des lignes.** `apply_rib` écrit toujours en `D88` / `D89`, et `post_mortem` / `verifier_facture` lisent le total et le RIB à leur place fixe : une telle facture est rejetée par le contrôle après écriture, ce qui bloque l'envoi au lieu de laisser passer une erreur. À corriger avec F-18.
+**Corrigé par F-18 : au-delà de 60 séances, tout le bas de facture suit le décalage.** Les fusions et hauteurs de ligne sous le tableau sont replacées après l'insertion ; `apply_rib`, `post_mortem` et `verifier_facture` travaillent aux lignes décalées.
+
+**Corrigé par F-18 : gabarit.** Le cadre de page interrompu (lignes 27 à 79) et le bandeau qui débordait de la zone d'impression produisaient des traits parasites ; le module retire ce cadre et refusionne le bandeau en `B2:R3`. Le papier est fixé en A4 (LibreOffice prenait Letter par défaut).
+
+**Polices et lisibilité.** Toute police posée par le module est nommée Calibri (sans nom, LibreOffice prenait une police à empattements). Les mentions du bas de facture sont en 15 pt, soit environ 6,6 pt une fois imprimées à l'échelle d'une page ; la déclaration d'activité n'est fusionnée sur `C:R`, pour passer à la ligne, que si elle dépasse la largeur imprimée.
 
 ---
 
@@ -127,8 +133,8 @@ Toutes les fonctions qui touchent une facture exigent l'entité en argument nomm
 | `place_sessions(ws, ecole_name, groups, *, entite, masquer_jour=False)` | Lignes de cours groupées par (promotion, libellé) |
 | `apply_mentions(ws, *, entite, date_emission, echeance=None)` | Total HT, net à payer, TVA, déclaration d'activité, échéance, escompte, pénalités, indemnité de 40 € (ADR030) |
 | `apply_rib(ws, *, entite)` | IBAN + BIC |
-| `apply_print_setup(ws, *, entite)` | Portrait, ajusté à une page de large, zone d'impression |
-| `post_mortem(ws, *, entite)` | Dictionnaire des cellules clés, dont échéance, NDA et contrat |
+| `apply_print_setup(ws, *, entite)` | A4 portrait ; une page jusqu'à 18 séances, sinon ajusté en largeur avec sauts manuels ; en-tête répété ; zone d'impression |
+| `post_mortem(ws, *, entite)` | Dictionnaire des cellules clés, dont échéance, NDA, contrat et textes fixes du bas ; valeurs `None` pour le bas si la formule du total est introuvable |
 | `verifier_facture(ws, *, entite, n_facture, date_emission, dest, ecole_name, groups, echeance=None, ref_contrat=None)` | Liste des écarts entre la facture relue et les valeurs attendues |
 | `calculer_echeance(date_emission, echeance=None)` | Échéance donnée, sinon émission + 30 jours ; refuse une échéance antérieure |
 | `emetteur_porte_ei(nom)` | Le nom de l'émetteur porte-t-il « EI » ou « Entrepreneur individuel » ? |

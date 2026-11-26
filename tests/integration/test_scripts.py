@@ -1,7 +1,8 @@
 """Scripts et commande `facturation` sur données fictives.
 
-Banque de tests : T-CLI-01 à T-CLI-09, T-COH-01, T-VER-01 à T-VER-06, T-CFG-02, T-CLI-11, T-CFG-03.
+Banque de tests : T-CLI-01 à T-CLI-11, T-COH-01, T-VER-01 à T-VER-06, T-CFG-02, T-CFG-03.
 T-CLI-03 à 09 et T-VER-03, 04 : mentions légales et échéance (F-24, ADR030).
+T-CLI-10 : facture de plus de 60 séances (F-18).
 """
 
 from __future__ import annotations
@@ -318,6 +319,20 @@ def test_t_cli_09_refus_echeance_invalide(tmp_path, echeance, options):
     assert "Écriture refusée" in res.stderr and "echeance" in res.stderr, res.stderr
     assert "Traceback" not in res.stderr, res.stderr
     assert not (racine / "ROSARI" / "ABC").exists()
+
+
+def test_t_cli_10_facture_de_62_seances(tmp_path):
+    """T-CLI-10 — une facture de 62 séances (lignes insérées) s'écrit avec le code 0 et un contrôle
+    après écriture sans écart (F-18)."""
+    racine = tmp_path / "donnees"
+    creer_master(racine)
+    seances = [{"date": f"2026-09-{1 + i % 28:02d}", "heures": 1, "taux": 50} for i in range(62)]
+    spec = _spec(tmp_path, masquer_jour=False, lignes=[{"promotion": "M1 S1", "libelle": "Module A", "seances": seances}])
+    res = _lancer("scripts/nouvelle_facture.py", str(spec), "--data-root", str(racine))
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "TOTAL HT     : 3100.00 €" in res.stdout
+    assert "OK — facture" in res.stdout
+    assert "ERREUR sur cellule" not in res.stdout + res.stderr
 
 
 def test_t_ver_03_verifier_signale_le_nda_manquant(tmp_path):

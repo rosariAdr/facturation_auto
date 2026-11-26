@@ -4,6 +4,17 @@ Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/). Versions : `0
 
 ## [Unreleased]
 
+### Ajouté (vague 1 du lot 1)
+- F-10 : lecture de l'agenda des cours par son adresse iCal (`facturation/agenda.py`) : récurrences, exceptions, occurrences déplacées, événements annulés et journées entières exclus, durée exacte au changement d'heure ; commande `facturation agenda lire --mois AAAA-MM [--fichier]` ; l'adresse n'apparaît jamais dans un message. Dépendances : `icalendar`, `recurring-ical-events`.
+- F-11 : lecture contrôlée du MASTER (onglets et colonnes nommés dans l'erreur) et écriture sûre (`facturation/master.py`) : sauvegarde horodatée avant écriture, verrou par poste (refus si Excel ou LibreOffice a le classeur ouvert, ou si une autre instance écrit), verrou retiré même en cas d'erreur.
+- F-15 : numérotation (`facturation/numerotation.py`) : numéro suivant, numéros manquants, codes école (3 lettres pour une nouvelle école), lecture des numéros du MASTER.
+
+### Modifié
+- `profil verifier` lit `agenda.secret` avec ou sans BOM et signale en ERREUR une adresse mal formée ou un fichier illisible.
+
+### Corrigé (F-18, fiabilisation du gabarit)
+- Formats de nombre sur toutes les lignes de cours ; facture d'une page jusqu'à 18 séances, sauts de page maîtrisés au-delà, bloc du bas jamais coupé ; bas de facture juste au-delà de 60 séances ; libellés et dénomination du client entiers ; traits parasites et bandeau corrigés ; mentions lisibles en Calibri ; contrôle après écriture étendu aux textes fixes et à la formule du net à payer.
+
 ### Ajouté (F-24, mentions légales de l'ADR030)
 - Bas de facture écrit par le module (`apply_mentions`) : « Total HT », « Net à payer », mention 293 B, déclaration d'activité lue dans `Info / NDA`, échéance datée (émission + 30 jours par défaut), « Pas d'escompte », pénalités exigibles dès le lendemain de l'échéance, indemnité forfaitaire de 40 €.
 - Ligne « N° de contrat » (`ref_contrat`) et champ `echeance` dans la spec de `nouvelle_facture.py` ; aperçu complété.

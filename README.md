@@ -13,7 +13,10 @@ Factures mensuelles d'un formateur indépendant, à partir de son agenda de cour
 | Aperçu d'une facture décrite par une spec JSON | Disponible | `python scripts/nouvelle_facture.py <spec> --dry-run` |
 | Écrire la facture dans le classeur de l'école, avec contrôle après écriture | Disponible | `python scripts/nouvelle_facture.py <spec>` (refuse d'écraser une facture existante) |
 | Contrôler le MASTER (`Cours`, `Sessions`) en lecture seule | Disponible | `python scripts/check_coherence.py` |
-| Lire l'agenda automatiquement | Prévu, lot 1 (F-10) | — |
+| Lire l'agenda des cours (récurrences, exceptions, changement d'heure) | Disponible (F-10) | `facturation agenda lire --mois AAAA-MM` (ou `--fichier agenda.ics`) ; l'adresse iCal n'est jamais affichée |
+| Lire le MASTER avec contrôle des onglets et des colonnes, écrire avec sauvegarde et verrou | Disponible (F-11), pas encore branché | Module `facturation/master.py` |
+| Proposer le numéro de facture suivant | Disponible (F-15), pas encore branché | Module `facturation/numerotation.py` |
+| Facture d'une page jusqu'à 18 séances, sauts de page maîtrisés au-delà, mentions lisibles | Disponible (F-18) | Automatique dans `nouvelle_facture.py` |
 | Classer les séances, calculer les heures facturables | Prévu, lot 1 (F-12, F-13) | — |
 | Préparer le 20, rappeler le 25 et du 28 à la fin du mois | Prévu, lot 1 (F-20, ADR027) | Le profil porte encore le 25 par défaut |
 | Tenir le journal `Sessions`, le suivi `Cours` et le registre `Factures` | Prévu, lot 1 (F-17, F-25) | À la main aujourd'hui |
@@ -147,7 +150,7 @@ python -m pytest -m regression   # format et rendu des factures
 python -m pytest -m unit         # profil et fonctions pures
 ```
 
-Tous les tests tournent sur des données fictives créées à la volée. Les défauts connus du gabarit (T-FMT-07, à corriger par F-18) sont marqués `xfail` strict : ils restent visibles dans le rapport et feront échouer la suite le jour où ils seront corrigés, pour rappeler de retirer le marqueur. GitHub Actions rejoue la banque à chaque pull request et à chaque push sur `main`, `dev` et les branches de travail (`feat/**`, `fix/**`, `chore/**`), sous Windows et Ubuntu, avec Python 3.11 et 3.12. Le rendu PDF est sauté si LibreOffice est absent.
+Tous les tests tournent sur des données fictives créées à la volée. Un défaut connu peut être marqué `xfail` strict : il reste visible dans le rapport et fait échouer la suite le jour où il est corrigé, pour rappeler de retirer le marqueur (les défauts T-FMT-07 du gabarit ont été corrigés par F-18). GitHub Actions rejoue la banque à chaque pull request et à chaque push sur `main`, `dev` et les branches de travail (`feat/**`, `fix/**`, `chore/**`), sous Windows et Ubuntu, avec Python 3.11 et 3.12. Le rendu PDF est sauté si LibreOffice est absent.
 
 ## Documentation
 
