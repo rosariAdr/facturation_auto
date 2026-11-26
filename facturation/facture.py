@@ -5,8 +5,10 @@ commande : F-16 et F-17 importent d'ici l'aperçu, les refus et l'écriture d'un
 à `sys.path`. Une facture s'écrit par un seul chemin de code et se contrôle par un seul :
 
 - `ecrire_onglet` écrit l'onglet de la facture dans un classeur ouvert (PCF étape 5), sans rien
-  enregistrer ;
-- `verifier_onglet` compare un onglet aux valeurs déduites de la spec (PCF étape 7.3) ;
+  enregistrer ; elle refuse une autre entité que celle de la spec, un onglet ou un numéro déjà
+  présents, et retire l'onglet commencé si une erreur survient en cours d'écriture ;
+- `verifier_onglet` compare un onglet, titre compris, aux valeurs déduites de la spec (PCF
+  étape 7.3) ;
 - `generer` enchaîne les contrôles, l'aperçu (PCF étape 6), `ecrire_onglet`, l'enregistrement, le
   post-mortem (PCF étape 7.2) et `verifier_onglet` sur l'onglet relu du fichier. L'émission (F-17)
   ne passe pas par `generer` : elle appelle `ecrire_onglet` et `verifier_onglet` sous verrou.
@@ -290,6 +292,19 @@ def apercu(
     ])
 
 
+def _refuser_autre_entite(spec: dict, entite: str) -> None:
+    """Les entités ne se mélangent jamais (ADR001) : `entite` doit être celle de la spec.
+
+    Raises:
+        ValueError: `entite` diffère de `spec["entite"]` ; le message nomme les deux.
+    """
+    if spec["entite"] != entite:
+        raise ValueError(
+            f"entité {entite!r} demandée pour la facture {spec.get('n_facture')!r}, qui est celle "
+            f"de l'entité {spec['entite']!r} : les entités ne se mélangent jamais (ADR001)."
+        )
+
+
 def ecrire_onglet(wb: Workbook, spec: dict, dest: dict, *, entite: str) -> Worksheet:
     """Écrit l'onglet de la facture à la fin de `wb`, sans rien enregistrer (PCF étape 5).
 
@@ -298,77 +313,114 @@ def ecrire_onglet(wb: Workbook, spec: dict, dest: dict, *, entite: str) -> Works
     (libellé `ecole_label`, sinon le code de l'école ; colonne Jour masquée ou non), mentions
     avec l'échéance de la spec, RIB, mise en page.
 
-    Les dates, l'échéance et les séances se lisent dans la spec avant la première écriture :
-    une spec invalide lève son erreur sans toucher au classeur. Les contrôles qui précèdent
-    l'écriture (onglet ou numéro déjà présents, destinataire complet, mentions de l'ADR030) sont
-    à la charge de l'appelant, comme dans `generer`. Ni la spec ni le destinataire ne sont modifiés.
+    Avant la première écriture, elle se garde elle-même : `entite` doit être celle de la spec
+    (ADR001) ; la spec est lue en entier (dates, échéance, séances, numéro, école) ; l'onglet ne
+    doit pas exister, même à la casse près, ni le numéro figurer dans un onglet du classeur
+    (`conflits_ecriture`, FA-02). Si une erreur survient ensuite, en cours d'écriture (MASTER
+    incomplet, par exemple), l'onglet commencé est retiré avant que l'erreur ne remonte : le
+    classeur garde ses onglets tels qu'ils étaient, et un appelant qui attrape l'erreur ne peut
+    pas enregistrer une facture à moitié écrite. Le destinataire complet et les mentions de
+    l'ADR030 restent contrôlés par l'appelant, comme dans `generer`. Ni la spec ni le destinataire
+    ne sont modifiés.
 
     Args:
         wb: classeur ouvert qui reçoit l'onglet ; les autres onglets ne sont pas touchés.
         spec: spec de la facture.
         dest: destinataire lu dans MASTER.Coordonnées (`fmt.get_destinataire`).
-        entite: code de l'entité, qui fixe le gabarit et l'émetteur.
+        entite: code de l'entité, qui fixe le gabarit et l'émetteur ; celui de la spec.
 
     Returns:
         L'onglet écrit.
 
     Raises:
-        ValueError: date mal formée (attendu AAAA-MM-JJ), ou échéance antérieure à la date
-            d'émission (`echeance_de_la_spec`).
+        ValueError: `entite` différente de `spec["entite"]`, date mal formée (attendu
+            AAAA-MM-JJ), échéance antérieure à la date d'émission (`echeance_de_la_spec`), ou
+            `Info` / `NDA` absent du MASTER.
+        KeyError: clé obligatoire absente de la spec.
+        EcritureRefusee: onglet déjà présent, ou numéro déjà présent dans un onglet ; le message
+            nomme l'onglet en conflit.
     """
+    _refuser_autre_entite(spec, entite)
     date_emission = _parse_date(spec["date_emission"])
     echeance = echeance_de_la_spec(spec)
     groupes = construire_groupes(spec["lignes"])
+    onglet = spec["onglet"]
+    n_facture = spec["n_facture"]
+    ecole_name = spec.get("ecole_label", spec["ecole"])
+    masquer_jour = bool(spec.get("masquer_jour", False))
+    ref_bon_commande = spec.get("ref_bon_commande")
+    ref_contrat = spec.get("ref_contrat") or None
 
-    ws = fmt.clone_template(wb, spec["onglet"], entite=entite)
-    fmt.apply_emetteur(ws, entite=entite)
-    fmt.apply_destinataire(ws, dest=dest, entite=entite)
-    fmt.apply_metadata(
-        ws,
-        n_facture=spec["n_facture"],
-        date_emission=date_emission,
-        entite=entite,
-        ref_bon_commande=spec.get("ref_bon_commande"),
-        ref_contrat=spec.get("ref_contrat") or None,
-    )
-    fmt.place_sessions(
-        ws,
-        ecole_name=spec.get("ecole_label", spec["ecole"]),
-        groups=groupes,
-        entite=entite,
-        masquer_jour=bool(spec.get("masquer_jour", False)),
-    )
-    fmt.apply_mentions(ws, entite=entite, date_emission=date_emission, echeance=echeance)
-    fmt.apply_rib(ws, entite=entite)
-    fmt.apply_print_setup(ws, entite=entite)
+    conflits = conflits_ecriture(wb, onglet, n_facture, entite=entite)
+    if conflits:
+        raise EcritureRefusee(
+            f"l'onglet '{onglet}' n'a pas été écrit : " + " ; ".join(conflits) + ". "
+            "Une facture émise ne se modifie pas : elle s'annule par un avoir."
+        )
+
+    onglets_avant = {id(feuille) for feuille in [*wb.worksheets, *wb.chartsheets]}
+    try:
+        ws = fmt.clone_template(wb, onglet, entite=entite)
+        fmt.apply_emetteur(ws, entite=entite)
+        fmt.apply_destinataire(ws, dest=dest, entite=entite)
+        fmt.apply_metadata(
+            ws,
+            n_facture=n_facture,
+            date_emission=date_emission,
+            entite=entite,
+            ref_bon_commande=ref_bon_commande,
+            ref_contrat=ref_contrat,
+        )
+        fmt.place_sessions(
+            ws,
+            ecole_name=ecole_name,
+            groups=groupes,
+            entite=entite,
+            masquer_jour=masquer_jour,
+        )
+        fmt.apply_mentions(ws, entite=entite, date_emission=date_emission, echeance=echeance)
+        fmt.apply_rib(ws, entite=entite)
+        fmt.apply_print_setup(ws, entite=entite)
+    except BaseException:
+        # Retirer l'onglet commencé, y compris s'il a été créé avant l'erreur de clone_template.
+        for feuille in [*wb.worksheets, *wb.chartsheets]:
+            if id(feuille) not in onglets_avant:
+                wb.remove(feuille)
+        raise
     return ws
 
 
 def verifier_onglet(ws: Worksheet, spec: dict, dest: dict, *, entite: str) -> list[str]:
     """Contrôle après écriture (PCF étape 7.3, FA-12) : écarts entre l'onglet et la spec.
 
-    Les valeurs attendues se déduisent de la spec comme à l'écriture : numéro, date d'émission,
-    libellé de l'école (`ecole_label`, sinon le code), séances (`construire_groupes`), échéance
-    (`echeance_de_la_spec` : sans échéance, émission + 30 jours) et contrat (sans `ref_contrat`,
-    la ligne de contrat doit être vide). Le destinataire attendu est celui reçu ; l'émetteur, le
-    SIRET, le RIB et le NDA sont lus dans le MASTER par `fmt.verifier_facture`. Ni la spec ni le
-    destinataire ne sont modifiés.
+    Les valeurs attendues se déduisent de la spec comme à l'écriture : titre de l'onglet
+    (`spec["onglet"]`, à l'identique : openpyxl suffixe en silence un titre déjà pris), numéro,
+    date d'émission, libellé de l'école (`ecole_label`, sinon le code), séances
+    (`construire_groupes`), échéance (`echeance_de_la_spec` : sans échéance, émission + 30 jours)
+    et contrat (sans `ref_contrat`, la ligne de contrat doit être vide). Le destinataire attendu
+    est celui reçu ; l'émetteur, le SIRET, le RIB et le NDA sont lus dans le MASTER de `entite`
+    par `fmt.verifier_facture`, d'où le refus d'une autre entité que celle de la spec. Ni la spec
+    ni le destinataire ne sont modifiés.
 
     Args:
         ws: onglet à contrôler, de préférence relu depuis le fichier enregistré.
         spec: spec de la facture.
         dest: destinataire attendu, celui passé à `ecrire_onglet`.
-        entite: code de l'entité.
+        entite: code de l'entité ; celui de la spec.
 
     Returns:
-        Une ligne « ERREUR sur cellule … : attendu …, trouvé … » par écart ; liste vide si
-        l'onglet est conforme.
+        Une ligne « ERREUR sur cellule … : attendu …, trouvé … » par écart (pour le titre, clé
+        `onglet`) ; liste vide si l'onglet est conforme.
 
     Raises:
-        ValueError: date mal formée, échéance antérieure à la date d'émission, ou `Info` /
-            `NDA` absent du MASTER.
+        ValueError: `entite` différente de `spec["entite"]`, date mal formée, échéance antérieure
+            à la date d'émission, ou `Info` / `NDA` absent du MASTER.
     """
-    return fmt.verifier_facture(
+    _refuser_autre_entite(spec, entite)
+    ecarts = []
+    if ws.title != spec["onglet"]:
+        ecarts.append(f"ERREUR sur cellule onglet : attendu {spec['onglet']!r}, trouvé {ws.title!r}")
+    return ecarts + fmt.verifier_facture(
         ws,
         entite=entite,
         n_facture=spec["n_facture"],
