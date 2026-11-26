@@ -5,8 +5,9 @@
 
 `preparer` lit l'agenda et le MASTER, écrit les brouillons et les aperçus sous
 `_sorties/<AAAA-MM>/` (jamais dans le MASTER), puis affiche l'aperçu global et le dossier.
-Codes : 3 si une facture est à valider, à revalider, à corriger ou bloquée, ou si un créneau est à
-classer ; 0 sinon ; 1 si la préparation est impossible ou le profil invalide.
+Codes : 3 si une facture est à valider, à revalider, à corriger ou bloquée, si un créneau est à
+classer, ou plus généralement tant que « À FAIRE » demande une action (§ 1.6) ; 0 sinon ; 1 si la
+préparation est impossible ou le profil invalide ; 2 pour `--ecoles` sans aucun code.
 
 `apercu` relit `preparation.json` et le journal du mois, sans relire l'agenda ni rien écrire.
 Codes : 1 sans préparation du mois (« lancez `facturation preparer --mois …` »), 0 sinon.
@@ -14,7 +15,9 @@ Codes : 1 sans préparation du mois (« lancez `facturation preparer --mois …`
 Lectures retenues (`💡 [proposé — à valider]`) : le mois par défaut se calcule sur la date du jour
 de la machine ; `--ecoles` accepte des codes séparés par des virgules (casse et espaces ignorés) ;
 `apercu --ouvrir` ouvre le dossier du mois sans afficher l'aperçu, et affiche seulement son chemin
-hors de Windows ; une facture inconnue de `--facture` est une erreur (code 1).
+hors de Windows ; une facture inconnue de `--facture` est une erreur (code 1). Constats de revue :
+`--ecoles` prépare ces écoles seulement et garde les autres telles quelles ; le code 3 suit le § 1.6
+(« À FAIRE » non vide), au-delà des seuls cas que cite le § 4.
 """
 
 from __future__ import annotations
@@ -53,11 +56,12 @@ def _erreur(message: str) -> None:
 
 
 def _code_de_retour(preparation, etats) -> int:
+    """3 tant que « À FAIRE » demande une action d'Adrian (§ 1.6), 0 quand il n'y a rien à faire."""
     from facturation import preparation as prp
 
     if preparation.a_classer or any(etats.get(b.identifiant) in prp.ETATS_A_TRAITER for b in preparation.brouillons):
         return 3
-    return 0
+    return 3 if prp.taches_a_faire(preparation, etats=etats) else 0
 
 
 def _preparer(args: argparse.Namespace) -> int:
@@ -70,6 +74,10 @@ def _preparer(args: argparse.Namespace) -> int:
     ecoles = None
     if args.ecoles is not None:
         ecoles = [code.strip().upper() for code in args.ecoles.split(",") if code.strip()]
+        if not ecoles:  # erreur d'usage (§ 1.6) : la préparation précédente n'est pas remplacée
+            print(entete(profil, mois))
+            _erreur(f"Préparation — --ecoles « {args.ecoles} » ne donne aucun code d'école (ex. --ecoles ABC,ECO)")
+            return 2
     contenu = None
     if args.fichier is not None:
         try:

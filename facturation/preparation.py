@@ -51,19 +51,50 @@ Lectures retenues (`💡 [proposé — à valider]`), là où le contrat se tait
   séances des brouillons, des séances déjà facturées et des créneaux à classer ; `apercu_facture`
   et `apercu_global` les reçoivent par `numeros=` (sans eux, une facture seule est numérotée à part) ;
 - « N créneau(x) à classer dans la période » : les créneaux dont la date tombe dans la période du
-  brouillon ; la ligne illisible de `Sessions` est un avertissement de chaque brouillon ;
+  brouillon ;
 - `Preparation.precedente_le` (champ ajouté, facultatif) date la préparation précédente, pour
   « CHANGEMENTS DEPUIS LE … » ; `EntreesPreparation.sessions_illisibles` (ajouté, facultatif)
   porte les lignes de `Sessions` qui ne se lisent pas ;
 - un `preparation.json` illisible (abîmé, d'un autre format ou d'une autre entité) n'empêche pas
   de préparer : il est rangé dans `historique/` et la préparation repart de zéro ; un refus du
   verrou (autre poste) ne s'écrit pas au journal, que l'outil ne tient pas.
+
+Constats de revue de F-16a (`💡 [proposé — à valider]`) :
+- les séances d'une pièce engagée ne repartent jamais dans un autre brouillon, même si son
+  identifiant a changé depuis (règles modifiées) : elles sont retirées, avec un avertissement ; une
+  pièce dont l'identifiant n'est plus celui d'aucun groupe bloque les brouillons de son école (pas
+  de facture complémentaire automatique, Q-D3) ;
+- chaque ligne de contrat porte son « Statut lot » (§ 16) : seules les lignes du lot ont une
+  période ; la séance d'un contrat « Plus tard » ou « Hors facturation » va dans `hors_lot`, et la
+  ligne hors lot en « fin de module » ne retient pas l'école ;
+- une valeur vide d'une mention obligatoire (SIRET, IBAN, BIC ; adresse L1 et L2, email et
+  téléphone de l'émetteur, ADR030 §1) bloque tous les brouillons ;
+- une ligne de `Sessions` illisible, ou sans école ou sans date, est un avertissement « ligne de
+  Sessions à corriger » des brouillons qu'elle peut concerner, repris dans « À FAIRE » ;
+- sans « Une facture par contrat », une « Réf. contrat » de Tarifs différente du « N° de
+  contrat » de la règle est un blocage ; une clé tarif qui désigne la ligne d'une autre école est un
+  blocage (jamais le taux d'une autre école) ; 0 h à facturer est un blocage (heures non
+  calculables) ;
+- la nature « contenu modifié » s'ajoute à celles du contrat : elle nomme chaque champ de
+  l'empreinte que les autres natures ne disent pas (intitulé, libellé de la ligne ou de l'école,
+  bon de commande…), et un filet garantit qu'une empreinte changée a toujours sa différence ;
+- `Factures.Période` saisie en date (Excel convertit « Déc 2026 » en 01/12/2026) vaut le mois de
+  la date ; une ligne de `Factures` de la même période dont le contrat n'est renseigné que d'un côté
+  donne l'avertissement « période peut-être déjà facturée hors outil », repris dans « À FAIRE » ;
+- `Preparation.exclues` (champ ajouté, facultatif) garde les séances exclues par décision, reconnues
+  ou non, montrées dans l'aperçu global ; une décision `classer` inapplicable (école inconnue)
+  renvoie sa seule séance dans la file à classer, avec la raison ;
+- `lancer_preparation(…, ecoles=…)` ne recalcule que ces écoles : les autres gardent leur état de
+  la préparation précédente ; un échec d'écriture ou du journal remet chaque fichier du mois tel
+  qu'il était ; une cellule que JSON ne porte pas (durée) est écrite en texte.
 """
 
 from __future__ import annotations
 
 import hashlib
 import importlib
+import math
+import os
 import re
 import unicodedata
 from collections import Counter
@@ -109,8 +140,12 @@ DOSSIER_HISTORIQUE = "historique"
 NATURES_DIFFERENCES = (
     "facture nouvelle", "facture disparue", "séance ajoutée", "séance retirée", "séance déplacée",
     "heures modifiées", "taux modifié", "coordonnées modifiées", "échéance modifiée",
-    "contrat modifié", "nouveau blocage", "blocage levé", "total modifié",
+    "contrat modifié", "contenu modifié", "nouveau blocage", "blocage levé", "total modifié",
 )
+# Débuts d'avertissement repris dans « À FAIRE » (une action d'Adrian est attendue).
+POSSIBLE_DOUBLON = "possible doublon avec Sessions"
+SESSIONS_A_CORRIGER = "ligne de Sessions à corriger"
+PERIODE_PEUT_ETRE_FACTUREE = "période peut-être déjà facturée hors outil"
 # Modules qui peuvent ajouter une section à l'aperçu global (`section_apercu`), dans cet ordre.
 MODULES_ANNEXES = (
     ("facturation.registre", "REGISTRE DES FACTURES"),
@@ -120,6 +155,10 @@ MODULES_ANNEXES = (
 ETATS_A_TRAITER = (journal.A_VALIDER, journal.A_REVALIDER, journal.A_CORRIGER, journal.BLOQUEE)
 
 _JOURS = ("lun.", "mar.", "mer.", "jeu.", "ven.", "sam.", "dim.")
+# Mentions obligatoires de l'émetteur (ADR030 §1) : clé de `pcf_format`, colonne de `Coordonnées`.
+_CHAMPS_EMETTEUR = (("adresse_l1", "Adresse L1"), ("adresse_l2", "Adresse L2"), ("email", "Email"),
+                    ("tel", "Téléphone"))
+_INFOS_OBLIGATOIRES = ("SIRET", "IBAN", "BIC")
 _MINUTE = "%Y-%m-%dT%H:%M%z"
 _VALEUR_DECISION_RE = re.compile(r"[0-9]+(?:[.,][0-9]+)?")
 
@@ -284,6 +323,17 @@ class EcoleNonPreparee:
 
 
 @dataclass(frozen=True)
+class SeanceExclue:
+    """Séance retirée par une décision `exclure` : ni facturée ni à classer, mais toujours montrée."""
+
+    cle_seance: str
+    ecole: str        # "" : séance non reconnue par `Correspondances`
+    seance: Seance
+    raison: str
+    decision: str     # id de la décision
+
+
+@dataclass(frozen=True)
 class EntreesPreparation:
     """Tout ce que lit la préparation, rassemblé par `charger_entrees`."""
 
@@ -326,6 +376,7 @@ class Preparation:
     ecoles_non_preparees: tuple[EcoleNonPreparee, ...]
     differences: tuple[Difference, ...]
     precedente_le: datetime | None = None
+    exclues: tuple[SeanceExclue, ...] = ()
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -543,7 +594,12 @@ class _Calcul:
     erreur_heures: str | None = None
     taux: float | None = None
     erreur_taux: str | None = None
+    erreur_cle: str | None = None    # clé tarif d'une autre école : jamais son taux
     ref_contrat: str | None = None
+
+    @property
+    def sans_taux(self) -> bool:
+        return self.erreur_taux is not None or self.erreur_cle is not None
 
 
 @dataclass
@@ -636,14 +692,48 @@ def _classee_par_decision(seance: Seance, decision: Decision, ecoles: Sequence[M
     )
 
 
+def _origine(classee: SeanceClassee, colonne: str) -> str:
+    """Où corriger le classement d'une séance : la ligne de `Correspondances`, ou la décision."""
+    if classee.par == PAR_DECISION:
+        return f"{_texte(classee.correspondance.get('Clé'))} du journal du mois, valeur « {colonne} »"
+    return f"onglet Correspondances, clé « {_texte(classee.correspondance.get('Clé'))} », colonne « {colonne} »"
+
+
 def _calculer(classee: SeanceClassee, lu: Master) -> _Calcul:
     calcul = _Calcul(classee=classee, cle=chemins.cle_seance(classee.seance))
     try:
         calcul.heures = heures_facturables(classee.seance, classee.correspondance)
     except (ValueError, TypeError) as exc:
         calcul.erreur_heures = str(exc)
+    if calcul.heures is not None and calcul.heures <= 0:
+        # `heures_facturables` accepte une Valeur nulle ; une ligne de facture à 0 h serait refusée
+        # par `facture.charger_spec` (heures ≤ 0) : on bloque ici, sans rien deviner.
+        calcul.erreur_heures = (
+            f"{_desc(classee.seance)} : {calcul.heures} h à facturer (mode « "
+            f"{_texte(classee.correspondance.get('Mode heures')) or 'agenda'} », valeur "
+            f"« {_texte(classee.correspondance.get('Valeur'))} ») ; une ligne de facture porte des heures "
+            "strictement positives"
+        )
+        calcul.heures = None
     try:
         ligne = ligne_tarif(classee.cle_tarif, lu.tarifs, ecoles=lu.ecoles)
+    except ValueError as exc:
+        invalide = lu.suivi_invalide.get("Tarifs")
+        calcul.erreur_taux = f"{exc}{f' ({invalide})' if invalide else ''}"
+        return calcul
+    try:
+        ecole_tarif = code_ecole(ligne.get("École"), lu.ecoles) or ""
+    except ValueError:
+        ecole_tarif = _code(ligne.get("École"))
+    if ecole_tarif != classee.ecole:
+        calcul.erreur_cle = (
+            f"clé tarif « {classee.cle_tarif} » : ligne de Tarifs de l'école {ecole_tarif or '(sans école)'}, alors "
+            f"que la séance du {_jour_fr(classee.seance.date)} « {classee.seance.intitule} » est classée pour "
+            f"{classee.ecole} ({_origine(classee, 'Clé tarif')}) : jamais le taux d'une autre école ; corrigez la "
+            "clé tarif"
+        )
+        return calcul
+    try:
         calcul.taux = taux_horaire(classee.cle_tarif, lu.tarifs, ecoles=lu.ecoles)
         calcul.ref_contrat = _texte(ligne.get("Réf. contrat")) or None
     except ValueError as exc:
@@ -671,24 +761,31 @@ def _forme_contrat(contrat: str | None) -> str:
 
 
 def _groupes_de_l_ecole(code: str, regles_e: list[RegleEcole], periodes: dict[str, tuple[date, date]],
-                        calculs: list[_Calcul], mois: str) -> list[_Groupe]:
-    """Répartit les séances d'une école en groupes (un par contrat, ou un seul), période comprise."""
-    base = regles_e[0]
+                        calculs: list[_Calcul], mois: str) -> tuple[list[_Groupe], list[_Calcul]]:
+    """Répartit les séances d'une école en groupes (un par contrat, ou un seul), période comprise.
+
+    `regles_e` : toutes les lignes de l'école ; `periodes` : celles des seules lignes du lot. La
+    séance d'un contrat dont la ligne est hors du lot (« Plus tard », « Hors facturation », § 16)
+    n'entre dans aucun groupe : elle est rendue à part (hors lot), jamais facturée ici.
+    """
+    du_lot = [r for r in regles_e if r.n_contrat in periodes]
+    base = du_lot[0]
     par_contrat = len(regles_e) > 1 or base.une_facture_par_contrat
     if not par_contrat:
         groupe = _Groupe(identifiant=f"{code}-{mois}", ecole=code, regle=base, periode=periodes[base.n_contrat],
                          contrat=None, par_contrat=False)
         groupe.calculs = [c for c in calculs if groupe.periode[0] <= c.classee.seance.date <= groupe.periode[1]]
-        return [groupe] if groupe.calculs else []
+        return ([groupe] if groupe.calculs else []), []
 
     regle_du_contrat = {_forme_contrat(r.n_contrat): r for r in regles_e if r.n_contrat}
     graphies: dict[str, str] = {}  # une référence écrite de deux façons (casse) reste un seul contrat
     affectations: list[tuple[_Calcul, str | None, RegleEcole, str | None]] = []
+    hors_lot: list[_Calcul] = []
     for c in sorted(calculs, key=lambda c: (c.classee.seance.debut, c.cle)):
         if c.ref_contrat is not None:
             c.ref_contrat = graphies.setdefault(_forme_contrat(c.ref_contrat), c.ref_contrat)
         cle_tarif = c.classee.cle_tarif
-        if c.erreur_taux is not None:
+        if c.sans_taux:
             affectations.append((c, None, base, None))
         elif c.ref_contrat is None:
             affectations.append((c, None, base, f"référence de contrat absente (Tarifs, colonne « Réf. contrat », clé "
@@ -696,6 +793,9 @@ def _groupes_de_l_ecole(code: str, regles_e: list[RegleEcole], periodes: dict[st
                                                  "son contrat (ADR030 §3)"))
         elif _forme_contrat(c.ref_contrat) in regle_du_contrat:
             regle = regle_du_contrat[_forme_contrat(c.ref_contrat)]
+            if regle.n_contrat not in periodes:
+                hors_lot.append(c)
+                continue
             affectations.append((c, regle.n_contrat, regle, None))
         elif len(regles_e) == 1 and not base.n_contrat:
             affectations.append((c, c.ref_contrat, base, None))
@@ -726,7 +826,7 @@ def _groupes_de_l_ecole(code: str, regles_e: list[RegleEcole], periodes: dict[st
                 f"école {code} : plusieurs lignes de contrat dans Règles_facturation ({numeros}) sans "
                 "« Une facture par contrat = oui » sur chacune : renseignez-la, une facture par contrat (ADR030 §3)"
             )
-    return [g for g in sorted(groupes.values(), key=lambda g: g.identifiant) if g.calculs]
+    return [g for g in sorted(groupes.values(), key=lambda g: g.identifiant) if g.calculs], hors_lot
 
 
 def _destinataire(destinataires: Mapping[str, dict | None], code: str) -> dict | None:
@@ -760,12 +860,26 @@ def _blocages_coordonnees(entrees: EntreesPreparation, code: str) -> list[str]:
     if entrees.emetteur is None:
         if not entrees.erreur_coordonnees:
             blocages.append("émetteur absent : ajoutez la ligne « Émetteur » de l'entité dans l'onglet Coordonnées")
-    elif not fmt.emetteur_porte_ei(entrees.emetteur.get("nom")):
-        blocages.append(
-            f"le nom de l'émetteur « {entrees.emetteur.get('nom')} » ne porte pas la mention « EI » ni « Entrepreneur "
-            "individuel » (onglet Coordonnées, ligne Émetteur, colonne « Nom / Raison sociale ») : mention obligatoire "
-            "(ADR030)"
-        )
+    else:
+        if not fmt.emetteur_porte_ei(entrees.emetteur.get("nom")):
+            blocages.append(
+                f"le nom de l'émetteur « {entrees.emetteur.get('nom')} » ne porte pas la mention « EI » ni "
+                "« Entrepreneur individuel » (onglet Coordonnées, ligne Émetteur, colonne « Nom / Raison sociale ») : "
+                "mention obligatoire (ADR030)"
+            )
+        vides = [colonne for cle, colonne in _CHAMPS_EMETTEUR if not _texte(entrees.emetteur.get(cle))]
+        if vides:
+            blocages.append(
+                f"émetteur incomplet : colonne{'s' if len(vides) > 1 else ''} {', '.join(f'« {v} »' for v in vides)} "
+                f"vide{'s' if len(vides) > 1 else ''} dans l'onglet Coordonnées (ligne Émetteur) : mention "
+                "obligatoire de la facture (ADR030 §1)"
+            )
+    for nom in _INFOS_OBLIGATOIRES:
+        if nom in entrees.info and not _texte(entrees.info.get(nom)):
+            blocages.append(
+                f"{nom} vide : renseignez la colonne « Adresse L1 » de la ligne Info / {nom} de l'onglet Coordonnées "
+                "(mention obligatoire de la facture, ADR030 §1 et §10)"
+            )
     if not entrees.nda:
         blocages.append(
             "n° de déclaration d'activité (NDA) absent : ajoutez la ligne Info / NDA de l'onglet Coordonnées "
@@ -785,9 +899,27 @@ def _cle_periode(valeur: Any) -> str:
     return _sans_accents(_forme(valeur))
 
 
+def _periode_lisible(valeur: Any) -> str:
+    if isinstance(valeur, (date, datetime)):
+        return _date_fr(valeur.date() if isinstance(valeur, datetime) else valeur)
+    return _texte(valeur)
+
+
+def _meme_periode(valeur: Any, formes: set[str], annee: int, numero: int) -> bool:
+    """`Factures.Période` désigne-t-elle le mois ? Libellé (« Déc 2026 », « Décembre 2026 »), ou date du
+    mois : Excel en français convertit la saisie « Déc 2026 » en date (01/12/2026)."""
+    if isinstance(valeur, (date, datetime)):
+        return (valeur.year, valeur.month) == (annee, numero)
+    return _cle_periode(valeur) in formes
+
+
 def _periode_deja_facturee(code: str, contrat: str | None, mois: str, lu: Master, engagees: Iterable[PieceEmission],
-                           identifiant: str) -> list[str]:
-    """Lignes de `Factures` de la même école, période et contrat, faites hors de l'outil."""
+                           identifiant: str) -> tuple[list[str], list[str]]:
+    """Lignes de `Factures` de la même école et de la même période, faites hors de l'outil.
+
+    Même contrat (vide égal vide) : blocage. Contrat renseigné d'un seul côté (ligne historique de
+    `Factures` sans « Contrat », Q-D6) : avertissement, pour que la garde ne se taise jamais.
+    """
     annee, numero = _annee_mois(mois)
     formes = {_cle_periode(chemins.libelle_periode(mois)), _cle_periode(f"{chemins.NOMS_MOIS[numero - 1]} {annee}")}
     abandonnes = numeros_abandonnes(lu.factures)
@@ -795,27 +927,37 @@ def _periode_deja_facturee(code: str, contrat: str | None, mois: str, lu: Master
     rangs = list(lu.rangs.get("factures") or [])
     if len(rangs) != len(lu.factures):
         rangs = list(range(2, len(lu.factures) + 2))
-    blocages = []
+    blocages: list[str] = []
+    avertissements: list[str] = []
     for rang, ligne in zip(rangs, lu.factures):
         try:
             ecole = code_ecole(ligne.get("École"), lu.ecoles) or ""
         except ValueError:
             ecole = _code(ligne.get("École"))
         n = _texte(ligne.get("N° facture"))
-        if ecole != code or _cle_periode(ligne.get("Période")) not in formes:
-            continue
-        if _forme_contrat(_texte(ligne.get("Contrat"))) != _forme_contrat(contrat):
+        if ecole != code or not _meme_periode(ligne.get("Période"), formes, annee, numero):
             continue
         if "".join(n.split()).upper() in abandonnes or _code(n) in pieces:
             continue
-        blocages.append(
-            f"période déjà facturée hors outil : la facture {n or '(sans n°)'} (onglet Factures, ligne {rang}, colonne "
-            f"« Période » « {_texte(ligne.get('Période'))} ») couvre déjà {chemins.libelle_periode(mois)} pour l'école "
-            f"{code}{f' et le contrat {contrat}' if contrat else ''}, sans pièce d'émission de l'outil ; si elle ne "
-            f"couvre pas ces séances, levez ce blocage par une décision « inclure » sur {identifiant} "
-            "(`facturation corriger --inclure`)"
-        )
-    return blocages
+        contrat_ligne = _texte(ligne.get("Contrat"))
+        ou = f"onglet Factures, ligne {rang}, colonne « Période » « {_periode_lisible(ligne.get('Période'))} »"
+        if _forme_contrat(contrat_ligne) == _forme_contrat(contrat):
+            blocages.append(
+                f"période déjà facturée hors outil : la facture {n or '(sans n°)'} ({ou}) couvre déjà "
+                f"{chemins.libelle_periode(mois)} pour l'école {code}{f' et le contrat {contrat}' if contrat else ''}, "
+                f"sans pièce d'émission de l'outil ; si elle ne couvre pas ces séances, levez ce blocage par une "
+                f"décision « inclure » sur {identifiant} (`facturation corriger --inclure`)"
+            )
+        elif not contrat_ligne or not contrat:
+            cote_factures = f"pour le contrat {contrat_ligne}" if contrat_ligne else "sans « Contrat »"
+            cote_brouillon = f"cite le contrat {contrat}" if contrat else "ne cite aucun contrat"
+            avertissements.append(
+                f"{PERIODE_PEUT_ETRE_FACTUREE} : la facture {n or '(sans n°)'} ({ou}) couvre déjà "
+                f"{chemins.libelle_periode(mois)} pour l'école {code}, {cote_factures}, alors que ce brouillon "
+                f"{cote_brouillon} ; vérifiez qu'elle ne couvre pas ces séances (renseignez sa colonne « Contrat »), "
+                f"ou confirmez par une décision « inclure » sur {identifiant}"
+            )
+    return blocages, avertissements
 
 
 def _seances_identiques(a: LigneBrouillon | Seance, b: LigneBrouillon | Seance) -> bool:
@@ -844,11 +986,52 @@ def _possibles_doublons(code: str, seance: Seance, sessions: Sequence[LigneSessi
             continue
         if l_debut < fin and debut < l_fin:
             messages.append(
-                f"possible doublon avec Sessions, ligne {ligne.rang} ({_date_fr(ligne.date_seance)} "
+                f"{POSSIBLE_DOUBLON}, ligne {ligne.rang} ({_date_fr(ligne.date_seance)} "
                 f"{l_debut:%H:%M}–{l_fin:%H:%M}, {ligne.n_facture or 'sans n°'}) : séance du "
                 f"{_jour_fr(seance.date)} {_horaire(seance.debut, seance.fin)} « {seance.intitule} » — vérifiez "
                 "qu'elle n'est pas déjà facturée"
             )
+    return messages
+
+
+def _heures_sessions(ligne: LigneSessions) -> str:
+    if ligne.debut is None and ligne.fin is None:
+        return "sans heure"
+    return f"{f'{ligne.debut:%H:%M}' if ligne.debut else '?'}–{f'{ligne.fin:%H:%M}' if ligne.fin else '?'}"
+
+
+def _sessions_a_corriger(code: str, jours: set[date], sessions: Sequence[LigneSessions],
+                         illisibles: Sequence[tuple[int, str]]) -> list[str]:
+    """Lignes de `Sessions` que l'anti-doublon (ADR005) ne peut pas rapprocher des séances du brouillon.
+
+    Une ligne illisible, ou sans école ni date, vaut pour chaque brouillon ; une ligne sans école
+    vaut pour les brouillons qui ont une séance ce jour-là ; une ligne sans date, pour ceux de son
+    école. Avertissement repris dans « À FAIRE » : une séance déjà facturée pourrait être refacturée.
+    """
+    messages = []
+    for ligne in sessions:
+        if ligne.abandonnee or (ligne.ecole and ligne.date_seance is not None):
+            continue
+        n = ligne.n_facture or "sans n°"
+        if not ligne.ecole and ligne.date_seance is None:
+            manque, concerne = "colonnes « École » et « Date_séance » vides", True
+        elif not ligne.ecole:
+            manque, concerne = "colonne « École » vide", ligne.date_seance in jours
+        else:
+            manque, concerne = "colonne « Date_séance » vide", ligne.ecole.upper() == code
+        if not concerne:
+            continue
+        jour = _date_fr(ligne.date_seance) if ligne.date_seance else "date ?"
+        messages.append(
+            f"{SESSIONS_A_CORRIGER} : onglet « Sessions », ligne {ligne.rang}, {manque} ({ligne.ecole or 'école ?'}, "
+            f"{jour}, {_heures_sessions(ligne)}, {n}) — l'anti-doublon ne la rapproche d'aucune séance : "
+            "complétez-la, une séance déjà facturée pourrait être refacturée"
+        )
+    for _, message in illisibles:
+        messages.append(
+            f"{SESSIONS_A_CORRIGER} : {message} — l'anti-doublon ne lit pas cette ligne : corrigez-la, une séance "
+            "déjà facturée pourrait être refacturée"
+        )
     return messages
 
 
@@ -863,13 +1046,35 @@ def _blocages_heures_taux(calculs: Iterable[_Calcul]) -> list[str]:
                 f"taux introuvable pour la clé « {c.classee.cle_tarif} » (onglet Tarifs) : ne jamais inventer un taux "
                 f"— {c.erreur_taux}"
             )
+        if c.erreur_cle is not None:
+            blocages.append(c.erreur_cle)
     return blocages
 
 
 def _contrat_commun(groupe: _Groupe, calculs: Iterable[_Calcul]) -> tuple[str | None, list[str]]:
-    """Contrat d'un brouillon d'école sans « Une facture par contrat » (ADR030 §3)."""
+    """Contrat d'un brouillon d'école sans « Une facture par contrat » (ADR030 §3).
+
+    Le « N° de contrat » de la règle l'emporte ; une « Réf. contrat » de Tarifs qui en diffère est
+    un blocage (la mention du contrat ne peut pas être fausse, comme en facturation par contrat).
+    """
     if groupe.regle.n_contrat:
-        return groupe.regle.n_contrat, []
+        n = groupe.regle.n_contrat
+        ecarts: dict[str, list[str]] = {}
+        for c in calculs:
+            if c.ref_contrat and _forme_contrat(c.ref_contrat) != _forme_contrat(n):
+                cles = ecarts.setdefault(c.ref_contrat, [])
+                if c.classee.cle_tarif not in cles:
+                    cles.append(c.classee.cle_tarif)
+        if not ecarts:
+            return n, []
+        refs = ", ".join(f"« {ref} » (clé{'s' if len(cles) > 1 else ''} {', '.join(f'« {k} »' for k in cles)})"
+                         for ref, cles in sorted(ecarts.items()))
+        return n, [
+            f"« Réf. contrat » {refs} de l'onglet Tarifs différente du « N° de contrat » « {n} » de l'école "
+            f"{groupe.ecole} (onglet Règles_facturation) : la facture citerait un autre contrat que celui de ses "
+            "tarifs (ADR030 §3) ; corrigez l'une des deux références, ou ajoutez la ligne de chaque contrat avec "
+            "« Une facture par contrat = oui »"
+        ]
     references = sorted({c.ref_contrat for c in calculs if c.ref_contrat}, key=_forme_contrat)
     distinctes = _uniques(references) if len({_forme_contrat(r) for r in references}) > 1 else references[:1]
     if len(distinctes) <= 1:
@@ -890,11 +1095,20 @@ class _Resultat:
 
 
 def _construire(groupe: _Groupe, *, entite: str, mois: str, entrees: EntreesPreparation, decisions: _Decisions,
-                maintenant: datetime, a_classer: Sequence[SeanceAClasser], exclues: Sequence[tuple[str, Seance, str]],
-                ignorer_numero: str | None = None) -> _Resultat:
-    """Brouillon d'un groupe (sans numéro probable ni empreinte), après l'anti-doublon."""
+                maintenant: datetime, a_classer: Sequence[SeanceAClasser], exclues: Sequence[SeanceExclue],
+                ignorer_numero: str | None = None, cles_pieces: Mapping[str, set[str]] | None = None,
+                orphelines: Sequence[PieceEmission] = ()) -> _Resultat:
+    """Brouillon d'un groupe (sans numéro probable ni empreinte), après l'anti-doublon.
+
+    `cles_pieces` : `cle_seance` de chaque pièce engagée de l'école. Une séance d'une autre pièce que
+    celle du groupe n'est jamais reprise (la pièce n'a peut-être pas encore écrit ses lignes dans
+    `Sessions`). `orphelines` : pièces de l'école dont l'identifiant n'est plus celui d'aucun groupe
+    (règles changées depuis) ; elles bloquent le brouillon : pas de facture complémentaire
+    automatique d'une période déjà émise (Q-D3).
+    """
     lu = entrees.master
     code = groupe.ecole
+    cles_pieces = cles_pieces or {}
     sessions = [
         l for l in entrees.sessions
         if ignorer_numero is None or "".join(l.n_facture.split()).upper() != ignorer_numero.upper()
@@ -902,7 +1116,12 @@ def _construire(groupe: _Groupe, *, entite: str, mois: str, entrees: EntreesPrep
     deja: list[SeanceDejaFacturee] = []
     retenus: list[_Calcul] = []
     avertissements: list[str] = []
+    dans_une_piece: list[tuple[_Calcul, str]] = []
     for c in sorted(groupe.calculs, key=lambda c: (c.classee.seance.debut, c.cle)):
+        autre = next((i for i, cles in sorted(cles_pieces.items()) if i != groupe.identifiant and c.cle in cles), None)
+        if autre is not None:
+            dans_une_piece.append((c, autre))
+            continue
         s = c.classee.seance
         exactes, sans_heure = chercher(code, s.debut, s.fin, sessions)
         if exactes:
@@ -949,6 +1168,13 @@ def _construire(groupe: _Groupe, *, entite: str, mois: str, entrees: EntreesPrep
         blocages.append(raison)
     blocages += blocages_contrat
     blocages += _blocages_heures_taux(retenus)
+    for piece in orphelines:
+        blocages.append(
+            f"période déjà émise sous un autre identifiant : la pièce {piece.n_facture} ({piece.identifiant}) couvre "
+            f"déjà {chemins.libelle_periode(mois)} pour l'école {code}, et les règles ont changé depuis (onglet "
+            "Règles_facturation) ; ces séances n'y sont pas : facturez-les à la main si elles sont dues, jamais par "
+            "une facture complémentaire automatique (Q-D3)"
+        )
 
     date_emission = date_emission_par_defaut(mois)
     echeance: date | None
@@ -958,7 +1184,10 @@ def _construire(groupe: _Groupe, *, entite: str, mois: str, entrees: EntreesPrep
         echeance = None
         blocages.append(f"échéance impossible à calculer (Règles_facturation, colonne « Délai de paiement ») : {exc}")
     if identifiant not in decisions.inclure:
-        blocages += _periode_deja_facturee(code, contrat, mois, lu, entrees.engagees.values(), identifiant)
+        deja_hors_outil, peut_etre = _periode_deja_facturee(code, contrat, mois, lu, entrees.engagees.values(),
+                                                            identifiant)
+        blocages += deja_hors_outil
+        avertissements += peut_etre
 
     if regle.rythme == "cycle":
         avertissements.insert(0, "école à cycle : date d'émission au 1er du mois suivant (ADR027) — voir Q-A2")
@@ -978,11 +1207,17 @@ def _construire(groupe: _Groupe, *, entite: str, mois: str, entrees: EntreesPrep
             f"{creneaux} créneau(x) à classer dans la période : jamais facturé(s) tant qu'il(s) ne sont pas classé(s) "
             "(facturation classer)"
         )
-    for ecole_exclue, seance, raison in exclues:
-        if ecole_exclue == code and du <= seance.date <= au:
-            avertissements.append(f"séance exclue par décision : {_desc(seance)}{f' ({raison})' if raison else ''}")
-    for rang, message in entrees.sessions_illisibles:
-        avertissements.append(f"{message} — l'anti-doublon ne lit pas cette ligne : corrigez-la")
+    for exclue in exclues:
+        if exclue.ecole == code and du <= exclue.seance.date <= au:
+            raison = f" ({exclue.raison})" if exclue.raison else ""
+            avertissements.append(f"séance exclue par décision : {_desc(exclue.seance)}{raison}")
+    for c, autre in dans_une_piece:
+        piece_n = next((p.n_facture for p in entrees.engagees.values() if p.identifiant == autre), "?")
+        avertissements.append(
+            f"séance déjà dans la pièce {piece_n} ({autre}, en émission ou émise) : {_desc(c.classee.seance)} — "
+            "retirée de ce brouillon, jamais refacturée"
+        )
+    avertissements += _sessions_a_corriger(code, {l.date for l in lignes}, sessions, entrees.sessions_illisibles)
 
     heures_lignes = [l.heures for l in lignes]
     total_heures = None
@@ -1003,6 +1238,30 @@ def _construire(groupe: _Groupe, *, entite: str, mois: str, entrees: EntreesPrep
         blocages=tuple(blocages), avertissements=tuple(avertissements), empreinte="",
     )
     return _Resultat(brouillon, deja, retenus)
+
+
+def _cles_de_la_piece(piece: PieceEmission) -> set[str]:
+    """`cle_seance` des lignes du brouillon figé dans la pièce d'émission."""
+    lignes = piece.brouillon.get("lignes") if isinstance(piece.brouillon, dict) else None
+    return {str(l["cle_seance"]) for l in lignes or [] if isinstance(l, dict) and l.get("cle_seance")}
+
+
+def _valeur_stockable(valeur: Any) -> Any:
+    """Valeur de cellule écrite telle quelle dans `preparation.json` si JSON la porte, sinon en texte
+    (une durée [h]:mm lue en `timedelta`, par exemple) : jamais d'échec d'écriture pour une cellule."""
+    if valeur is None or isinstance(valeur, (str, bool, int)):
+        return valeur
+    if isinstance(valeur, float):
+        return valeur if math.isfinite(valeur) else str(valeur)
+    try:
+        return str(fichiers.en_json(valeur))
+    except TypeError:
+        return str(valeur)
+
+
+def _stockable(classee: SeanceClassee) -> SeanceClassee:
+    """La séance classée, sa ligne de `Correspondances` réduite à des valeurs que JSON porte."""
+    return replace(classee, correspondance={str(k): _valeur_stockable(v) for k, v in classee.correspondance.items()})
 
 
 def _gardes_de_l_ecole(resultats: list[_Resultat]) -> None:
@@ -1042,15 +1301,15 @@ def preparer(*, entite: str, mois: str, entrees: EntreesPreparation, prefixe: st
 
     Raises:
         ValueError: mois invalide ; école de `ecoles` inconnue ou hors du lot ; ligne de
-            `Correspondances` mal formée (erreur globale, le message nomme l'onglet) ; décision
-            `classer` dont l'école est inconnue.
+            `Correspondances` mal formée (erreur globale, le message nomme l'onglet). Une décision
+            `classer` inapplicable (école inconnue) renvoie seulement sa séance dans la file à classer.
     """
     debut_mois, fin_mois = chemins.mois_valide(mois)
     annee, numero = debut_mois.year, debut_mois.month
     lu = entrees.master
     decisions = _Decisions.depuis(entrees.decisions)
 
-    # 1. Écoles
+    # 1. Écoles ; seules les lignes du lot (« Statut lot » de chaque ligne de contrat, § 16) ont une période
     par_code: dict[str, list[RegleEcole]] = {}
     for regle in entrees.regles.values():
         par_code.setdefault(regle.ecole, []).append(regle)
@@ -1061,8 +1320,9 @@ def preparer(*, entite: str, mois: str, entrees: EntreesPreparation, prefixe: st
     periodes_ecole: dict[str, dict[str, tuple[date, date]]] = {}
     non_preparees: list[EcoleNonPreparee] = []
     for code in selection:
+        lignes_du_lot = [r for r in par_code[code] if _forme(r.statut_lot) == _forme(lot)]
         try:
-            periodes_ecole[code] = {r.n_contrat: periode_a_facturer(r, annee, numero) for r in par_code[code]}
+            periodes_ecole[code] = {r.n_contrat: periode_a_facturer(r, annee, numero) for r in lignes_du_lot}
         except NotImplementedError:
             non_preparees.append(EcoleNonPreparee(code, "rythme « fin de module » : à préparer à la main"))
         except ValueError as exc:
@@ -1074,7 +1334,7 @@ def preparer(*, entite: str, mois: str, entrees: EntreesPreparation, prefixe: st
     file = {id(a.seance): a for a in a_classer_brut}
     retenues: list[SeanceClassee] = []
     a_classer: list[SeanceAClasser] = []
-    exclues: list[tuple[str, Seance, str]] = []
+    exclues: list[SeanceExclue] = []
     for seance in entrees.seances:
         cle = chemins.cle_seance(seance)
         if cle in decisions.exclure:
@@ -1086,10 +1346,18 @@ def preparer(*, entite: str, mois: str, entrees: EntreesPreparation, prefixe: st
                     ecole = code_ecole(origine.ecole, lu.ecoles) or ""
                 except ValueError:
                     ecole = ""
-            exclues.append((ecole, seance, _texte(d.valeurs.get("raison")) or _texte(d.commentaire)))
+            exclues.append(SeanceExclue(cle, ecole, seance, _texte(d.valeurs.get("raison")) or _texte(d.commentaire),
+                                        d.id))
             continue
         if cle in decisions.classer:
-            retenues.append(_classee_par_decision(seance, decisions.classer[cle], lu.ecoles))
+            d = decisions.classer[cle]
+            try:
+                retenues.append(_classee_par_decision(seance, d, lu.ecoles))
+            except ValueError as exc:  # école inconnue : la séance n'est jamais facturée, elle revient à classer
+                a_classer.append(SeanceAClasser(
+                    seance=seance,
+                    raison=f"décision {d.id} (classer) inapplicable : {exc} ; annulez-la ou classez à nouveau",
+                ))
         elif id(seance) in reconnues:
             retenues.append(_avec_code(reconnues[id(seance)], lu.ecoles))
         else:
@@ -1121,18 +1389,23 @@ def preparer(*, entite: str, mois: str, entrees: EntreesPreparation, prefixe: st
     sans_seance: list[str] = []
     for code in sorted(periodes_ecole):
         calculs = [_calculer(c, lu) for c in par_ecole.get(code, [])]
-        groupes = _groupes_de_l_ecole(code, par_code[code], periodes_ecole[code], calculs, mois)
+        groupes, contrats_hors_lot = _groupes_de_l_ecole(code, par_code[code], periodes_ecole[code], calculs, mois)
+        hors_lot += [c.classee for c in contrats_hors_lot if debut_mois <= c.classee.seance.date <= fin_mois]
         engagees = {i: p for i, p in entrees.engagees.items() if i.split("-")[0] == code}
         if not groupes and not engagees:
             sans_seance.append(code)
             continue
+        cles_pieces = {i: _cles_de_la_piece(p) for i, p in engagees.items()}
+        toutes_cles = set().union(*cles_pieces.values()) if cles_pieces else set()
+        identifiants_groupes = {g.identifiant for g in groupes}
+        orphelines = [p for i, p in sorted(engagees.items()) if i not in identifiants_groupes]
         resultats: list[_Resultat] = []
         for groupe in groupes:
             piece = engagees.get(groupe.identifiant)
             commun = dict(entite=entite, mois=mois, entrees=entrees, decisions=decisions, maintenant=maintenant,
-                          a_classer=a_classer, exclues=exclues)
+                          a_classer=a_classer, exclues=exclues, cles_pieces=cles_pieces)
             if piece is None:
-                resultat = _construire(groupe, **commun)
+                resultat = _construire(groupe, orphelines=orphelines, **commun)
                 deja_facturees += resultat.deja
                 if resultat.brouillon is not None:
                     resultats.append(resultat)
@@ -1141,18 +1414,15 @@ def preparer(*, entite: str, mois: str, entrees: EntreesPreparation, prefixe: st
             recalcule = resultat.brouillon
             change = recalcule is None or empreinte_brouillon(recalcule) != piece.empreinte
             deja_emises.append((groupe.identifiant, piece.n_facture, change))
-            lignes_piece = piece.brouillon.get("lignes") if isinstance(piece.brouillon, dict) else None
-            cles_piece = {l.get("cle_seance") for l in lignes_piece or [] if isinstance(l, dict)}
             for c in groupe.calculs:
                 s = c.classee.seance
-                if c.cle in cles_piece:
+                if c.cle in toutes_cles:
                     continue
                 exactes, sans_heure = chercher(code, s.debut, s.fin, entrees.sessions)
                 if not exactes and not sans_heure:
                     non_facturees.append(c.classee)
-        for identifiant, piece in sorted(engagees.items()):
-            if identifiant not in {g.identifiant for g in groupes}:
-                deja_emises.append((identifiant, piece.n_facture, True))
+        for piece in orphelines:
+            deja_emises.append((piece.identifiant, piece.n_facture, True))
         _gardes_de_l_ecole(resultats)
         brouillons += [r.brouillon for r in resultats]
 
@@ -1186,16 +1456,18 @@ def preparer(*, entite: str, mois: str, entrees: EntreesPreparation, prefixe: st
         fenetre=tuple(entrees.fenetre), empreinte_agenda=entrees.empreinte_agenda,
         brouillons=tuple(finals),
         a_classer=tuple(a_classer),
-        hors_lot=tuple(sorted(hors_lot, key=lambda c: (c.seance.debut, chemins.cle_seance(c.seance)))),
+        hors_lot=tuple(_stockable(c) for c in sorted(hors_lot, key=lambda c: (c.seance.debut,
+                                                                                chemins.cle_seance(c.seance)))),
         ecoles_sans_regle=tuple(sorted(sans_regle)),
         deja_facturees=tuple(sorted(deja_facturees, key=lambda d: _cle_chrono(d.cle_seance))),
         deja_emises=tuple(sorted(deja_emises)),
         non_facturees_periode_emise=tuple(
-            sorted(non_facturees, key=lambda c: (c.seance.debut, chemins.cle_seance(c.seance)))
+            _stockable(c) for c in sorted(non_facturees, key=lambda c: (c.seance.debut, chemins.cle_seance(c.seance)))
         ),
         ecoles_sans_seance=tuple(sans_seance),
         ecoles_non_preparees=tuple(non_preparees),
         differences=(),
+        exclues=tuple(sorted(exclues, key=lambda e: _cle_chrono(e.cle_seance))),
     )
 
 
@@ -1265,6 +1537,7 @@ def _differences_brouillon(a: Brouillon, n: Brouillon) -> list[Difference]:
             taux[(avant.taux, apres.taux)] = taux.get((avant.taux, apres.taux), 0) + 1
     for (avant, apres), nombre in taux.items():
         par_nature["taux modifié"].append(f"{_taux_txt(avant)} → {_taux_txt(apres)} ({_pluriel(nombre, 'séance')})")
+    par_nature["contenu modifié"] += _contenu_modifie(a, n, paires)
     coordonnees = []
     if a.destinataire != n.destinataire:
         coordonnees.append("destinataire")
@@ -1287,7 +1560,52 @@ def _differences_brouillon(a: Brouillon, n: Brouillon) -> list[Difference]:
     par_nature["blocage levé"] += [b for b in a.blocages if b not in n.blocages]
     if a.total_ht != n.total_ht:
         par_nature["total modifié"].append(f"{_euros(a.total_ht)} → {_euros(n.total_ht)}")
-    return [Difference(ident, nature, detail) for nature in NATURES_DIFFERENCES for detail in par_nature[nature]]
+    resultat = [Difference(ident, nature, detail) for nature in NATURES_DIFFERENCES for detail in par_nature[nature]]
+    hors_empreinte = {"nouveau blocage", "blocage levé"}
+    if a.empreinte != n.empreinte and all(d.nature in hors_empreinte for d in resultat):
+        # filet : une empreinte changée (donc « à revalider ») a toujours sa différence
+        detail = f"contenu de la facture modifié (empreinte {a.empreinte[:12]} → {n.empreinte[:12]}) : relisez l'aperçu"
+        resultat.append(Difference(ident, "contenu modifié", detail))
+    return resultat
+
+
+def _citation(valeur: Any) -> str:
+    return "—" if valeur in (None, "") else f"« {valeur} »"
+
+
+def _contenu_modifie(a: Brouillon, n: Brouillon, paires: Sequence[tuple[LigneBrouillon, LigneBrouillon]]) -> list[str]:
+    """Champs écrits sur la facture (dans l'empreinte, § 4.13) que les autres natures ne disent pas."""
+    details = []
+    if a.ecole_label != n.ecole_label:
+        details.append(f"libellé de l'école : {_citation(a.ecole_label)} → {_citation(n.ecole_label)} (onglet Écoles)")
+    if (a.periode, a.periode_label) != (n.periode, n.periode_label):
+        details.append(f"période : du {_date_fr(a.periode[0])} au {_date_fr(a.periode[1])} « {a.periode_label} » → du "
+                       f"{_date_fr(n.periode[0])} au {_date_fr(n.periode[1])} « {n.periode_label} »")
+    if a.date_emission != n.date_emission:
+        details.append(f"date d'émission : {_date_fr(a.date_emission)} → {_date_fr(n.date_emission)}")
+    if a.bon_commande != n.bon_commande:
+        details.append(f"bon de commande : {_citation(a.bon_commande)} → {_citation(n.bon_commande)}")
+    if a.masquer_jour != n.masquer_jour:
+        etat = {True: "masquée", False: "affichée"}
+        details.append(f"colonne Jour : {etat[a.masquer_jour]} → {etat[n.masquer_jour]} (Règles_facturation)")
+    if a.regroupement != n.regroupement:
+        details.append(f"regroupement : {a.regroupement} → {n.regroupement} (Règles_facturation)")
+    for avant, apres in paires:
+        seance = f"séance du {_jour_fr(apres.date)} {_horaire(apres.debut, apres.fin)}"
+        meme = avant.cle_seance == apres.cle_seance  # sinon « séance déplacée » montre déjà horaires et intitulé
+        if meme and avant.intitule != apres.intitule:
+            details.append(f"intitulé de la {seance} : {_citation(avant.intitule)} → {_citation(apres.intitule)}")
+        if meme and avant.heures == apres.heures and (f"{avant.fin:{_MINUTE}}" != f"{apres.fin:{_MINUTE}}"):
+            details.append(f"horaires de la {seance} : {_horaire(avant.debut, avant.fin)} → "
+                           f"{_horaire(apres.debut, apres.fin)}")
+        if avant.libelle != apres.libelle:
+            details.append(f"libellé de la ligne (Module) de la {seance} : {_citation(avant.libelle)} → "
+                           f"{_citation(apres.libelle)}")
+        if avant.promotion != apres.promotion:
+            details.append(f"promotion de la {seance} : {_citation(avant.promotion)} → {_citation(apres.promotion)}")
+        if avant.cle_tarif != apres.cle_tarif:
+            details.append(f"clé tarif de la {seance} : {_citation(avant.cle_tarif)} → {_citation(apres.cle_tarif)}")
+    return details
 
 
 def differences(ancienne: Preparation | None, nouvelle: Preparation) -> list[Difference]:
@@ -1522,9 +1840,27 @@ def _a_faire(preparation: Preparation, etats: Mapping[str, str], f_de: Mapping[s
         taches.append(f"Préparer à la main : {ecole.ecole} ({ecole.raison})")
     for b in preparation.brouillons:
         for avertissement in b.avertissements:
-            if avertissement.startswith("possible doublon avec Sessions"):
+            if avertissement.startswith((POSSIBLE_DOUBLON, PERIODE_PEUT_ETRE_FACTUREE)):
                 taches.append(f"Vérifier {b.identifiant} : {avertissement}")
+    sessions: dict[str, list[str]] = {}
+    for b in preparation.brouillons:
+        for avertissement in b.avertissements:
+            if avertissement.startswith(SESSIONS_A_CORRIGER):
+                detail = avertissement[len(SESSIONS_A_CORRIGER):].lstrip(" :")
+                sessions.setdefault(detail, []).append(b.identifiant)
+    for detail, concernees in sessions.items():
+        taches.append(f"Corriger Sessions ({designation(concernees)}) : {detail}")
     return taches
+
+
+def taches_a_faire(preparation: Preparation, *, etats: Mapping[str, str] | None = None) -> list[str]:
+    """Tâches de la section « À FAIRE » (sans numérotation) ; liste vide : rien à faire.
+
+    `facturation preparer` rend 3 dès qu'il en reste une (§ 1.6 : une action d'Adrian est requise).
+    """
+    etats = {b.identifiant: (etats or {}).get(b.identifiant) or _etat_par_defaut(b) for b in preparation.brouillons}
+    f_de = {v: k for k, v in numeros_courts(preparation).items() if k.startswith("F")}
+    return _a_faire(preparation, etats, f_de)
 
 
 def apercu_global(preparation: Preparation, *, etats: Mapping[str, str] | None = None,
@@ -1586,6 +1922,11 @@ def apercu_global(preparation: Preparation, *, etats: Mapping[str, str] | None =
                  f"{s_de.get(d.cle_seance, '?')}`") if d.certitude == MEME_JOUR else ""
         lignes.append(f"  {s_de.get(d.cle_seance, '?'):<5} {d.ecole} {_jour_fr(d.date)}  {d.n_facture or 'sans n°'} "
                       f"({d.certitude}){suite}")
+    lignes += ["", f"EXCLUES PAR DÉCISION ({len(p.exclues)}) — ni facturées ni à classer"]
+    for e in p.exclues:
+        s = e.seance
+        lignes.append(f"  {e.ecole or 'non reconnue'} {_jour_fr(s.date)} {_horaire(s.debut, s.fin)}  « {s.intitule} »"
+                      f"{f' — {e.raison}' if e.raison else ''} (décision {e.decision})")
     lignes += ["", f"DÉJÀ ÉMISES ({len(p.deja_emises)}) — jamais régénérées"]
     for identifiant, n_facture, change in p.deja_emises:
         etat = ("contenu changé depuis l'émission : `facturation recontroler` (F-23)" if change
@@ -1757,6 +2098,11 @@ def _preparation_de(d: Mapping[str, Any]) -> Preparation:
             Difference(str(x["identifiant"]), str(x["nature"]), str(x["detail"])) for x in d["differences"]
         ),
         precedente_le=_datetime(d["precedente_le"]) if d.get("precedente_le") else None,
+        exclues=tuple(
+            SeanceExclue(cle_seance=str(x["cle_seance"]), ecole=str(x["ecole"]), seance=_seance_de(x["seance"]),
+                         raison=str(x["raison"]), decision=str(x["decision"]))
+            for x in d.get("exclues") or []
+        ),
     )
 
 
@@ -1821,34 +2167,150 @@ def etats_de_validation(profil: "Profil", preparation: Preparation) -> dict[str,
 # Lancement (sous verrou) et écritures
 # ──────────────────────────────────────────────────────────────────────
 
-_ECHECS = (AgendaIndisponible, ValueError, OSError, MasterInvalide, MasterVerrouille)
+# Un `TypeError` (cellule d'un type inattendu, par exemple) échoue proprement lui aussi : événement
+# `échec`, préparation précédente intacte, jamais de trace Python brute.
+_ECHECS = (AgendaIndisponible, ValueError, OSError, TypeError, MasterInvalide, MasterVerrouille)
+
+
+def _remettre_octets(chemin: Path, octets: bytes) -> None:
+    """Remet le contenu d'origine d'un fichier, de façon atomique (temporaire du même dossier)."""
+    chemin.parent.mkdir(parents=True, exist_ok=True)
+    temporaire = chemin.with_name(f"{chemin.name}.restauration-{os.getpid()}")
+    try:
+        with open(temporaire, "wb") as flux:
+            flux.write(octets)
+            flux.flush()
+            os.fsync(flux.fileno())
+        os.replace(temporaire, chemin)
+    finally:
+        if temporaire.exists():
+            temporaire.unlink()
+
+
+class _Instantane:
+    """Contenu, avant écriture, des fichiers qu'une préparation remplace ou supprime, pour les remettre
+    à l'identique, octet pour octet, si la suite échoue (§ 4 : « la préparation précédente reste
+    identique octet pour octet »)."""
+
+    def __init__(self, chemins_touches: Iterable[Path], dossiers: Iterable[Path]) -> None:
+        self.avant = {chemin: (chemin.read_bytes() if chemin.is_file() else None) for chemin in chemins_touches}
+        self.dossiers = [dossier for dossier in dossiers if not dossier.exists()]
+        self.crees: list[Path] = []
+
+    def restaurer(self) -> None:
+        """Remet chaque fichier dans son état d'avant ; au mieux, sans jamais masquer l'erreur d'origine."""
+        for chemin in reversed(self.crees):
+            try:
+                chemin.unlink(missing_ok=True)
+            except OSError:
+                pass
+        for chemin, octets in self.avant.items():
+            try:
+                if octets is None:
+                    chemin.unlink(missing_ok=True)
+                elif not chemin.is_file() or chemin.read_bytes() != octets:
+                    _remettre_octets(chemin, octets)
+            except OSError:
+                pass
+        for dossier in reversed(self.dossiers):
+            try:
+                dossier.rmdir()  # seulement s'il est resté vide
+            except OSError:
+                pass
 
 
 def _ecrire_sorties(profil: "Profil", preparation: Preparation, ancienne: Preparation | None,
-                    etats: Mapping[str, str], annexes: Sequence[tuple[str, Sequence[str]]]) -> None:
-    """Écritures atomiques sous `_sorties/<mois>/` ; `preparation.json` en dernier."""
+                    etats: Mapping[str, str], annexes: Sequence[tuple[str, Sequence[str]]]) -> _Instantane:
+    """Écritures atomiques sous `_sorties/<mois>/` ; `preparation.json` en dernier.
+
+    Tout est calculé avant la première écriture. Si une écriture échoue, chaque fichier remplacé ou
+    supprimé est remis tel qu'il était, et la copie ajoutée à `historique/` est retirée, avant que
+    l'erreur remonte. Rend l'instantané, pour que l'appelant annule aussi sur un échec qui suit
+    (événement du journal).
+    """
     dossier = chemins.dossier_mois(profil, preparation.mois)
-    dossier.mkdir(parents=True, exist_ok=True)
     chemin = dossier / NOM_PREPARATION
-    if chemin.is_file():
-        horodatage = ancienne.prepare_le if ancienne is not None else datetime.now()
-        fichiers.sauvegarder_fichier(chemin, dossier / DOSSIER_HISTORIQUE, horodatage=horodatage)
-    numeros = numeros_courts(preparation)
     apercus = dossier / DOSSIER_APERCUS
-    voulus = set()
+    historique = dossier / DOSSIER_HISTORIQUE
+    numeros = numeros_courts(preparation)
+    textes: dict[Path, str] = {}
     for b in preparation.brouillons:
         propres = [d for d in preparation.differences if d.identifiant == b.identifiant]
         texte = apercu_facture(b, differences=None if preparation.precedente_le is None else propres,
                                etat=etats.get(b.identifiant), numeros=numeros)
-        fichiers.ecrire_texte_atomique(apercus / f"{b.identifiant}.txt", texte + "\n")
-        voulus.add(f"{b.identifiant}.txt")
-    if apercus.is_dir():
-        for perime in apercus.glob("*.txt"):
-            if perime.name not in voulus:
-                perime.unlink()
-    fichiers.ecrire_texte_atomique(dossier / NOM_APERCU, apercu_global(preparation, etats=etats, sections=annexes))
-    fichiers.ecrire_texte_atomique(dossier / NOM_A_CLASSER, _texte_a_classer(preparation))
-    fichiers.ecrire_json_atomique(chemin, _en_json_preparation(preparation))
+        textes[apercus / f"{b.identifiant}.txt"] = texte + "\n"
+    textes[dossier / NOM_APERCU] = apercu_global(preparation, etats=etats, sections=annexes)
+    textes[dossier / NOM_A_CLASSER] = _texte_a_classer(preparation)
+    donnees = _en_json_preparation(preparation)
+    perimes = sorted(f for f in apercus.glob("*.txt") if f not in textes) if apercus.is_dir() else []
+
+    instantane = _Instantane([chemin, *textes, *perimes], [dossier, apercus, historique])
+    try:
+        dossier.mkdir(parents=True, exist_ok=True)
+        if chemin.is_file():
+            horodatage = ancienne.prepare_le if ancienne is not None else datetime.now()
+            instantane.crees.append(fichiers.sauvegarder_fichier(chemin, historique, horodatage=horodatage))
+        for cible, texte in textes.items():
+            fichiers.ecrire_texte_atomique(cible, texte)
+        for perime in perimes:
+            perime.unlink()
+        fichiers.ecrire_json_atomique(chemin, donnees)
+    except BaseException:
+        instantane.restaurer()
+        raise
+    return instantane
+
+
+def _codes_selectionnes(ecoles: Sequence[str] | None) -> set[str] | None:
+    return None if ecoles is None else {_code(e) for e in ecoles if _code(e)}
+
+
+def _fusionner(partielle: Preparation, ancienne: Preparation | None, selection: set[str]) -> Preparation:
+    """Préparation partielle (`--ecoles`) complétée par l'état précédent des autres écoles.
+
+    Les écoles hors de la sélection gardent leurs brouillons tels quels (même empreinte : leur
+    validation reste valable), leurs séances déjà facturées, leurs pièces et leurs signalements ;
+    les créneaux et exclusions hors de la nouvelle fenêtre de lecture sont gardés aussi. Ce que la
+    nouvelle lecture a vu (fenêtre, écoles sélectionnées) remplace l'ancien.
+    """
+    if ancienne is None:
+        return partielle
+    du, au = partielle.fenetre
+
+    def gardee(ecole: str) -> bool:
+        return ecole not in selection
+
+    def hors_fenetre(jour: date) -> bool:
+        return not du <= jour <= au
+
+    vues = {chemins.cle_seance(a.seance) for a in partielle.a_classer}
+    a_classer = [*partielle.a_classer, *(a for a in ancienne.a_classer
+                                          if hors_fenetre(a.seance.date) and chemins.cle_seance(a.seance) not in vues)]
+    exclues_vues = {e.cle_seance for e in partielle.exclues}
+    exclues = [*partielle.exclues, *(e for e in ancienne.exclues
+                                     if hors_fenetre(e.seance.date) and e.cle_seance not in exclues_vues)]
+    return replace(
+        partielle,
+        fenetre=(min(du, ancienne.fenetre[0]), max(au, ancienne.fenetre[1])),
+        brouillons=tuple(sorted([*partielle.brouillons, *(b for b in ancienne.brouillons if gardee(b.ecole))],
+                                key=lambda b: b.identifiant)),
+        a_classer=tuple(sorted(a_classer, key=lambda a: (a.seance.debut, chemins.cle_seance(a.seance)))),
+        deja_facturees=tuple(sorted([*partielle.deja_facturees, *(d for d in ancienne.deja_facturees
+                                                                   if gardee(d.ecole))],
+                                    key=lambda d: _cle_chrono(d.cle_seance))),
+        deja_emises=tuple(sorted([*partielle.deja_emises, *(d for d in ancienne.deja_emises
+                                                             if gardee(d[0].split("-")[0]))])),
+        non_facturees_periode_emise=tuple(sorted(
+            [*partielle.non_facturees_periode_emise, *(c for c in ancienne.non_facturees_periode_emise
+                                                        if gardee(c.ecole))],
+            key=lambda c: (c.seance.debut, chemins.cle_seance(c.seance)))),
+        ecoles_sans_seance=tuple(sorted({*partielle.ecoles_sans_seance,
+                                         *(e for e in ancienne.ecoles_sans_seance if gardee(e))})),
+        ecoles_non_preparees=tuple(sorted([*partielle.ecoles_non_preparees,
+                                           *(e for e in ancienne.ecoles_non_preparees if gardee(e.ecole))],
+                                          key=lambda e: e.ecole)),
+        exclues=tuple(sorted(exclues, key=lambda e: _cle_chrono(e.cle_seance))),
+    )
 
 
 def _lancer_sous_verrou(profil: "Profil", mois: str, *, contenu_ics: bytes | None, maintenant: datetime,
@@ -1862,17 +2324,24 @@ def _lancer_sous_verrou(profil: "Profil", mois: str, *, contenu_ics: bytes | Non
             ancienne = lire_preparation(profil, mois)
         except PreparationIllisible:
             ancienne = None  # regénérée ; l'ancienne est rangée dans historique/
+        selection = _codes_selectionnes(ecoles)
+        if selection is not None:
+            nouvelle = _fusionner(nouvelle, ancienne, selection)
         nouvelle = replace(nouvelle, differences=tuple(differences(ancienne, nouvelle)),
                            precedente_le=ancienne.prepare_le if ancienne is not None else None)
         etats = etats_de_validation(profil, nouvelle)
         annexes = sections_annexes(profil, aujourd_hui=maintenant.date())
-        _ecrire_sorties(profil, nouvelle, ancienne, etats, annexes)
-        journal.ajouter_evenement(
-            chemin_journal, "preparation", poste=poste, entite=profil.entite, mois=mois, statut="ok",
-            brouillons=[b.identifiant for b in nouvelle.brouillons],
-            bloques=[b.identifiant for b in nouvelle.brouillons if b.statut == BLOQUE],
-            a_classer=[chemins.cle_seance(a.seance) for a in nouvelle.a_classer], erreur=None,
-        )
+        instantane = _ecrire_sorties(profil, nouvelle, ancienne, etats, annexes)
+        try:
+            journal.ajouter_evenement(
+                chemin_journal, "preparation", poste=poste, entite=profil.entite, mois=mois, statut="ok",
+                brouillons=[b.identifiant for b in nouvelle.brouillons],
+                bloques=[b.identifiant for b in nouvelle.brouillons if b.statut == BLOQUE],
+                a_classer=[chemins.cle_seance(a.seance) for a in nouvelle.a_classer], erreur=None,
+            )
+        except BaseException:
+            instantane.restaurer()  # l'issue annoncée (échec) correspond au disque
+            raise
     except _ECHECS as exc:
         message = fichiers.masquer_secrets(str(exc)) or type(exc).__name__
         try:
@@ -1888,18 +2357,24 @@ def lancer_preparation(profil: "Profil", mois: str, *, contenu_ics: bytes | None
                        maintenant: datetime | None = None, ecoles: Sequence[str] | None = None) -> Preparation:
     """Prépare le mois sous le verrou d'entité et écrit les sorties du mois (aucune écriture dans le MASTER).
 
-    En cas d'échec (agenda, MASTER, règles, verrou, disque…), l'événement `preparation` / `échec`
-    est ajouté au journal du mois (message masqué) et la préparation précédente reste intacte.
+    En cas d'échec (agenda, MASTER, règles, verrou, disque, journal…), l'événement `preparation` /
+    `échec` est ajouté au journal du mois (message masqué) et la préparation précédente reste
+    identique octet pour octet.
+
+    Avec `ecoles` (préparation partielle, `preparer --ecoles`), seules ces écoles sont recalculées :
+    les autres gardent leur état de la préparation précédente (brouillons, empreintes, aperçus).
 
     Raises:
-        PreparationImpossible: racine dans un dépôt git ou introuvable, verrou tenu ailleurs, ou
-            échec de la préparation ; l'exception d'origine est enchaînée.
+        PreparationImpossible: racine dans un dépôt git ou introuvable, `ecoles` sans aucun code,
+            verrou tenu ailleurs, ou échec de la préparation ; l'exception d'origine est enchaînée.
     """
     try:
         chemins.mois_valide(mois)
         chemins.refuser_racine_dans_un_depot(profil.racine)
     except ValueError as exc:
         raise PreparationImpossible(str(exc)) from exc
+    if ecoles is not None and not _codes_selectionnes(ecoles):
+        raise PreparationImpossible("aucune école donnée : indiquez au moins un code (ex. --ecoles ABC,ECO)")
     if not Path(profil.racine).is_dir():
         raise PreparationImpossible(
             f"dossier de données introuvable : {profil.racine} ; si c'est un lecteur Google Drive, vérifiez qu'il "
