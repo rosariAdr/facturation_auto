@@ -32,7 +32,7 @@ C'est ainsi que sont produites les factures de novembre 2026.
 | Étape | Qui | Comment, aujourd'hui |
 |---|---|---|
 | 1. Périmètre | Humain | Choisir l'entité, l'école, la période et le contrat. Numéro : plus grand numéro de la série + 1 (ADR029). Date d'émission : le 1er du mois suivant (ADR027). |
-| 2. Relevé de l'agenda | Humain | Relever les séances de la période dans l'agenda des cours. **Aucune lecture automatique** (prévue en F-10). |
+| 2. Relevé de l'agenda | Script + humain | `facturation agenda lire --mois AAAA-MM` liste les séances du mois (F-10) ; le rattachement aux écoles et le report dans la spec restent manuels jusqu'à F-12 et F-16. |
 | 3. Contrôle du MASTER | Script + humain | `python scripts/check_coherence.py --sessions` : état de `Cours` et de `Sessions`, en lecture seule ; il additionne les lignes d'une facture **sans repérer les doublons**. Les heures facturables suivent les règles de l'école. |
 | 4. Coordonnées | Script + humain | `facturation profil verifier` signale un émetteur ou un destinataire incomplet ; `nouvelle_facture.py` refuse un destinataire absent ou sans adresse, un NDA manquant et un émetteur sans « EI », dès l'aperçu. |
 | 5. Format | Script | `scripts/nouvelle_facture.py` applique le gabarit et le module (`FORMAT.md`). |
