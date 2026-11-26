@@ -468,3 +468,122 @@ def test_t_fac_02_aide_du_script_enveloppe():
     assert "Génère une facture depuis une spec JSON" in res.stdout, res.stdout
     for option in ("--data-root", "--profil", "--dry-run"):
         assert option in res.stdout, option
+
+
+# ──────────────────────────────────────────────────────────────────────
+# P-0b — refonte de la répartition (T-CLI-12) et vérification (T-VER-07 à T-VER-09)
+# ──────────────────────────────────────────────────────────────────────
+#
+# T-CLI-12 fige les sorties des commandes existantes, relevées sur `dev` (4c5bdbb) avant la refonte
+# de `cli.py` (répartition sur `args.func`, contrats des vagues 3 à 5, § 3.7) : elles ne doivent
+# pas changer. T-VER-07 à T-VER-09 : `profil verifier` signale en ATTENTION chaque onglet de suivi
+# invalide (`suivi_invalide`) et chaque perte de `fidelite_aller_retour` ; une installation saine
+# n'en signale aucun.
+
+SANS_PROFIL = {"FACTURATION_PROFIL": "aucun_profil_fictif.toml"}
+
+SORTIE_AGENDA_NOVEMBRE = """\
+Séances de novembre 2026 (fuseau Europe/Paris) :
+  jeu. 05/11/2026  14:00–17:30    3,5 h  #ABC-M1 Cours fictif - Module A (déplacé)
+  mar. 10/11/2026  09:00–12:30    3,5 h  #ABC-M1 Cours fictif - Module A
+  ven. 13/11/2026  00:30–02:30      2 h  #ECO-M2 Cours fictif noté en UTC
+  mar. 17/11/2026  09:00–12:30    3,5 h  #ABC-M1 Cours fictif - Module A
+  mar. 24/11/2026  09:00–12:30    3,5 h  #ABC-M1 Cours fictif - Module A
+  sam. 28/11/2026  10:00–13:30    3,5 h  #ABC-M1 Cours fictif - Module A
+  lun. 30/11/2026  20:00–22:00      2 h  #ABC-M1 Cours fictif du soir
+
+7 séance(s), 21,5 h au total.
+"""
+
+
+def test_t_cli_12_commandes_existantes_memes_sorties(tmp_path):
+    """T-CLI-12 — après la refonte de la répartition, `agenda lire`, `profil chemin` et les erreurs
+    d'usage rendent exactement les sorties et les codes relevés avant elle."""
+    res = _lancer("-m", "facturation", "agenda", "lire", "--mois", "2026-11", "--fichier", str(AGENDA_FICTIF),
+                  env_extra=SANS_PROFIL)
+    assert (res.returncode, res.stdout, res.stderr) == (0, SORTIE_AGENDA_NOVEMBRE, "")
+
+    profil = tmp_path / "config" / "profil.toml"
+    res = _lancer("-m", "facturation", "profil", "chemin", env_extra={"FACTURATION_PROFIL": str(profil)})
+    assert (res.returncode, res.stdout, res.stderr) == (0, f"{profil}\n", "")
+
+    res = _lancer("-m", "facturation", "agenda", "lire", "--mois", "2026-13", "--fichier", str(AGENDA_FICTIF),
+                  env_extra=SANS_PROFIL)
+    assert res.returncode == 2 and res.stdout == ""
+    assert "argument --mois: mois invalide : '2026-13', attendu AAAA-MM (ex. 2026-11)" in res.stderr
+
+    res = _lancer("-m", "facturation", "agenda", "lire", "--mois", "2026-11", "--fichier", "absent.ics",
+                  env_extra=SANS_PROFIL)
+    assert (res.returncode, res.stdout) == (1, "")
+    assert res.stderr == "[ERREUR]    Agenda — impossible de lire absent.ics : fichier introuvable\n"
+
+    res = _lancer("-m", "facturation", env_extra=SANS_PROFIL)
+    assert res.returncode == 2 and res.stdout == ""
+    assert res.stderr.startswith("usage: facturation")
+
+    res = _lancer("-m", "facturation", "profil", "verifier", "--profil", str(tmp_path / "absent.toml"))
+    assert res.returncode == 1
+    assert res.stdout.startswith("[ERREUR]    Profil — Profil invalide (")
+
+
+def _installation(tmp_path: Path) -> tuple[Path, Path]:
+    """Installation fictive complète : (racine, profil)."""
+    racine = tmp_path / "donnees"
+    master = creer_master(racine, tarifs=[["ABC", "Module fictif", "M1", "45 €/h", "", ""]],
+                          ecoles=[["École Fictive A", "ABC"]])
+    profil = tmp_path / "profil.toml"
+    profil.write_text(config.rediger("Personne A", "ROSARI", str(racine)), encoding="utf-8")
+    return master, profil
+
+
+def _attentions(sortie: str) -> list[str]:
+    return [ligne for ligne in sortie.splitlines() if ligne.startswith("[ATTENTION]")]
+
+
+def _retirer(master: Path, onglet: str, colonne: str):
+    wb = load_workbook(master)
+    ws = wb[onglet]
+    ws.delete_cols([c.value for c in ws[1]].index(colonne) + 1)
+    wb.save(master)
+
+
+def test_t_ver_07_verifier_signale_chaque_onglet_de_suivi_invalide(tmp_path):
+    """T-VER-07 — `profil verifier` : une ATTENTION par onglet de suivi invalide, qui nomme l'onglet et
+    la colonne manquante ; ce n'est pas une erreur (code 0)."""
+    master, profil = _installation(tmp_path)
+    _retirer(master, "Tarifs", "Taux HT/h")
+    _retirer(master, "Écoles", "Code facturation")
+    res = _lancer("-m", "facturation", "profil", "verifier", "--profil", str(profil))
+    assert res.returncode == 0, res.stdout + res.stderr
+    attentions = _attentions(res.stdout)
+    assert any("Tarifs" in a and "Taux HT/h" in a for a in attentions), res.stdout
+    assert any("Écoles" in a and "Code facturation" in a for a in attentions), res.stdout
+
+
+def test_t_ver_08_verifier_signale_les_pertes_de_l_aller_retour(tmp_path):
+    """T-VER-08 — `profil verifier` lance `fidelite_aller_retour` sur le MASTER : des formules dans
+    `Sessions` donnent une ATTENTION (« elles se liront vides… »), pas une erreur ; le MASTER n'est
+    pas modifié."""
+    master, profil = _installation(tmp_path)
+    wb = load_workbook(master)
+    ws = wb["Sessions"]
+    ws.append(["2026-10-01", "ABC", "Septembre 2026", "R_ABC001", None, "09:00", "12:30", 3.5, "M1", "Module fictif",
+               45, "=H2*K2", "#ABC-M1 Cours fictif"])
+    wb.save(master)
+    avant = master.read_bytes()
+    res = _lancer("-m", "facturation", "profil", "verifier", "--profil", str(profil))
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert any("se liront vides" in a and "Sessions" in a for a in _attentions(res.stdout)), res.stdout
+    assert master.read_bytes() == avant
+
+
+def test_t_ver_09_installation_saine_sans_attention_de_suivi_ni_de_fidelite(tmp_path):
+    """T-VER-09 — sur une installation fictive saine, `profil verifier` ne signale ni onglet de suivi
+    invalide ni perte d'aller-retour (les gardes de T-VER-07 et T-VER-08 ne parlent pas à vide)."""
+    _, profil = _installation(tmp_path)
+    res = _lancer("-m", "facturation", "profil", "verifier", "--profil", str(profil))
+    assert res.returncode == 0, res.stdout + res.stderr
+    for attention in _attentions(res.stdout):
+        assert "se liront vides" not in attention, attention
+        for mot in ("Tarifs", "Écoles", "Cours", "Taux HT/h", "Code facturation", "perdu", "perte"):
+            assert mot not in attention, attention

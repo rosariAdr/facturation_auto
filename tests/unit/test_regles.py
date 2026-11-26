@@ -1,4 +1,4 @@
-"""Règles de facturation par école (F-14, ADR015, ADR026, ADR027, ADR030 ; banque de tests : T-REG-01 à T-REG-44).
+"""Règles de facturation par école (F-14, ADR015, ADR026, ADR027, ADR030 ; banque de tests : T-REG-01 à T-REG-48).
 
 Tests d'acceptation écrits avant l'implémentation : chaque test importe `facturation.regles`
 lui-même, pour que l'absence du module fasse échouer les tests sans bloquer la collecte des
@@ -33,6 +33,14 @@ Constats de la revue de F-14 (T-REG-30 à T-REG-44) : les tests marqués `💡 [
 fixent le minimum attendu sans choisir la forme de la correction. T-REG-31 est réservé aux écoles
 à plusieurs contrats : le contrat de la vague (« une école en double → ValueError ») contredit
 MASTER_SCHEMA, ADR030 §3 et le critère F-14 (« une facture par contrat ») ; Adrian tranche.
+
+Révision de P-0b (T-REG-31, T-REG-45 à T-REG-48) : la décision Q-B1 (contrats des vagues 3 à 5,
+§ 16) admet une ligne par contrat ; « la clé devient (école, n° de contrat) ». `regles_par_ecole`
+rend donc un dictionnaire indexé par le couple (code école, n° de contrat), le n° valant "" quand
+la cellule est vide. Les tests qui indexaient le résultat par le seul code école (T-REG-02, 03,
+09, 24, 29f, 32, 40b, 42) sont réécrits avec cette clé, sans autre changement : ils avaient raison
+sous le contrat de la vague 2, que le § 16 remplace. Une école en double sans contrat (T-REG-10)
+reste refusée.
 """
 
 from __future__ import annotations
@@ -106,7 +114,8 @@ def _regle(**valeurs):
     """La règle de l'école `ABC` (ou de l'école donnée) lue depuis une seule ligne."""
     ligne = _ligne(**valeurs)
     regles = _module().regles_par_ecole([ligne])
-    return regles[ligne["École"].strip().upper()]
+    (regle,) = regles.values()
+    return regle
 
 
 def _seance(jour: date, debut_h: int = 9, fin_h: int = 12) -> Seance:
@@ -173,8 +182,8 @@ def test_t_reg_02_ligne_complete_lue_champ_par_champ():
     )
     regles = _module().regles_par_ecole([ligne])
     assert isinstance(regles, dict)
-    assert list(regles) == ["ABC"]
-    regle = regles["ABC"]
+    assert list(regles) == [("ABC", "CTR-FICTIF-001")]
+    regle = regles[("ABC", "CTR-FICTIF-001")]
     assert (regle.ecole, regle.statut_lot, regle.rythme, regle.debut_cycle) == ("ABC", "Lot 1", "cycle", 15)
     assert (regle.date_limite, regle.delai_paiement, regle.n_contrat) == (
         "15 à 12 h", "45 jours fin de mois", "CTR-FICTIF-001",
@@ -192,9 +201,9 @@ def test_t_reg_03_plusieurs_ecoles_et_liste_vide():
     m = _module()
     assert m.regles_par_ecole([]) == {}
     regles = m.regles_par_ecole([_ligne("ABC", statut="Lot 1"), _ligne("DEF", statut="Plus tard")])
-    assert sorted(regles) == ["ABC", "DEF"]
-    assert regles["DEF"].ecole == "DEF"
-    assert regles["DEF"].statut_lot == "Plus tard"
+    assert sorted(regles) == [("ABC", ""), ("DEF", "")]
+    assert regles[("DEF", "")].ecole == "DEF"
+    assert regles[("DEF", "")].statut_lot == "Plus tard"
 
 
 @pytest.mark.parametrize("vide", VIDES, ids=["None", "chaine-vide", "espaces"])
@@ -282,9 +291,9 @@ def test_t_reg_08_valeur_hors_liste_refusee(colonne, valeur):
 def test_t_reg_09_code_ecole_sans_espaces_et_en_majuscules():
     """T-REG-09 — le code école sert de clé, sans espaces autour et en majuscules."""
     regles = _module().regles_par_ecole([_ligne(" abc ", statut="Lot 1"), _ligne("Ec2")])
-    assert sorted(regles) == ["ABC", "EC2"]
-    assert regles["ABC"].ecole == "ABC"
-    assert regles["EC2"].ecole == "EC2"
+    assert sorted(regles) == [("ABC", ""), ("EC2", "")]
+    assert regles[("ABC", "")].ecole == "ABC"
+    assert regles[("EC2", "")].ecole == "EC2"
 
 
 @pytest.mark.parametrize("second", ["ABC", " ABC ", "abc"], ids=["identique", "espaces", "minuscules"])
@@ -486,8 +495,8 @@ def test_t_reg_24_echeance_depuis_la_regle_lue():
     m = _module()
     regles = m.regles_par_ecole([_ligne("ABC"), _ligne("DEF", delai="45 jours fin de mois")])
     emission = date(2026, 12, 1)
-    assert m.echeance_selon_regle(emission, regles["ABC"].delai_paiement) == date(2026, 12, 31)
-    assert m.echeance_selon_regle(emission, regles["DEF"].delai_paiement) == date(2027, 1, 31)
+    assert m.echeance_selon_regle(emission, regles[("ABC", "")].delai_paiement) == date(2026, 12, 31)
+    assert m.echeance_selon_regle(emission, regles[("DEF", "")].delai_paiement) == date(2027, 1, 31)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -616,9 +625,9 @@ def test_t_reg_29f_une_facture_par_contrat_quand_la_regle_le_demande():
         _ligne("ABC", par_contrat="oui", contrat="CTR-FICTIF-001"),
         _ligne("DEF", par_contrat="non"),
     ])
-    assert regles["ABC"].une_facture_par_contrat is True
-    assert regles["ABC"].n_contrat == "CTR-FICTIF-001"
-    assert regles["DEF"].une_facture_par_contrat is False
+    assert regles[("ABC", "CTR-FICTIF-001")].une_facture_par_contrat is True
+    assert regles[("ABC", "CTR-FICTIF-001")].n_contrat == "CTR-FICTIF-001"
+    assert regles[("DEF", "")].une_facture_par_contrat is False
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -663,10 +672,10 @@ def test_t_reg_32_erreur_d_une_ecole_hors_lot_ne_retient_pas_le_lot(statut):
         _ligne("ABC", statut="Lot 1"),
     ])
     assert m.ecoles_du_lot(regles) == ["ABC"]
-    assert m.periode_a_facturer(regles["ABC"], 2026, 11) == (date(2026, 11, 1), date(2026, 11, 30))
-    if "XYZ" in regles:
+    assert m.periode_a_facturer(regles[("ABC", "")], 2026, 11) == (date(2026, 11, 1), date(2026, 11, 30))
+    if ("XYZ", "") in regles:
         with pytest.raises(ValueError):
-            m.echeance_selon_regle(date(2026, 12, 1), regles["XYZ"].delai_paiement)
+            m.echeance_selon_regle(date(2026, 12, 1), regles[("XYZ", "")].delai_paiement)
 
 
 def test_t_reg_33_delai_illisible_refuse_au_chargement():
@@ -773,7 +782,7 @@ def test_t_reg_40a_lot_vide_ne_designe_aucune_ecole():
 def test_t_reg_40b_ligne_entierement_vide_ignoree():
     """T-REG-40b — une ligne entièrement vide est ignorée, comme le promet la docstring de
     `regles_par_ecole` (fonction publique : l'appelant ne passe pas forcément par `lire_master`)."""
-    assert list(_module().regles_par_ecole([_ligne("ABC"), dict.fromkeys(COLONNES)])) == ["ABC"]
+    assert list(_module().regles_par_ecole([_ligne("ABC"), dict.fromkeys(COLONNES)])) == [("ABC", "")]
 
 
 @pytest.mark.parametrize("saisie", [12345.0, 12345], ids=["decimal", "entier"])
@@ -794,7 +803,7 @@ def test_t_reg_42_colonne_du_schema_manquante_refusee():
     ligne["Bon de commande requise"] = "oui"
     with pytest.raises(ValueError, match="Bon de commande requis"):
         m.regles_par_ecole([ligne])
-    assert list(m.regles_par_ecole([{**_ligne("ABC"), "Commentaire": "Note fictive"}])) == ["ABC"]
+    assert list(m.regles_par_ecole([{**_ligne("ABC"), "Commentaire": "Note fictive"}])) == [("ABC", "")]
 
 
 @pytest.mark.parametrize("saisie", [datetime(2026, 11, 15), time(12, 0)], ids=["date", "heure"])
@@ -825,3 +834,87 @@ def test_t_reg_44_erreurs_de_plusieurs_ecoles_dans_un_seul_message():
     message = str(erreur.value)
     for attendu in ("ABC", "trimestriel", "DEF", "peut-être"):
         assert attendu in message
+
+
+# ──────────────────────────────────────────────────────────────────────
+# P-0b — une ligne par contrat (décision Q-B1, contrats des vagues 3 à 5, § 16)
+# ──────────────────────────────────────────────────────────────────────
+#
+# Lectures retenues (`💡 [proposé — à valider]`) : la clé est (code école, n° de contrat sans
+# espaces autour), le n° valant "" quand la cellule est vide ; quand une école a plusieurs lignes,
+# chacune doit porter un n° de contrat (« à condition qu'elles portent des N° de contrat
+# distincts ») : une ligne sans n° à côté d'une ligne avec n° est refusée, comme deux lignes sans
+# n° ; deux n° qui ne diffèrent que par les espaces autour sont le même contrat.
+
+
+def test_t_reg_31_une_ligne_par_contrat():
+    """T-REG-31 — une école peut avoir une ligne par contrat, à n° de contrat distincts : chaque règle
+    est rangée sous (école, n° de contrat), avec son propre délai et son propre drapeau ; l'école
+    n'apparaît qu'une fois dans son lot, et la période se calcule pour chaque règle."""
+    m = _module()
+    regles = m.regles_par_ecole([
+        _ligne("ABC", statut="Lot 1", contrat="CTR-FICTIF-001", par_contrat="oui"),
+        _ligne(" abc ", statut="Lot 1", contrat=" CTR-FICTIF-002 ", delai="45 jours fin de mois", par_contrat="oui"),
+        _ligne("DEF", statut="Lot 1"),
+    ])
+    assert sorted(regles) == [("ABC", "CTR-FICTIF-001"), ("ABC", "CTR-FICTIF-002"), ("DEF", "")]
+    premier, second = regles[("ABC", "CTR-FICTIF-001")], regles[("ABC", "CTR-FICTIF-002")]
+    assert (premier.ecole, premier.n_contrat, premier.delai_paiement) == ("ABC", "CTR-FICTIF-001", "")
+    assert (second.ecole, second.n_contrat, second.delai_paiement) == ("ABC", "CTR-FICTIF-002", "45 jours fin de mois")
+    assert premier.une_facture_par_contrat and second.une_facture_par_contrat
+    assert m.ecoles_du_lot(regles) == ["ABC", "DEF"]
+    for regle in (premier, second):
+        assert m.periode_a_facturer(regle, 2026, 12) == (date(2026, 12, 1), date(2026, 12, 31))
+        assert m.blocages(regle, ref_bon_commande=None) == []
+
+
+@pytest.mark.parametrize("second", ["CTR-FICTIF-001", " CTR-FICTIF-001 "], ids=["identique", "espaces"])
+def test_t_reg_45_meme_contrat_deux_fois_refuse(second):
+    """T-REG-45 — une école avec le même n° de contrat sur deux lignes reste refusée : `ValueError` qui
+    nomme l'école et le contrat."""
+    with pytest.raises(ValueError) as erreur:
+        _module().regles_par_ecole([
+            _ligne("ABC", statut="Lot 1", contrat="CTR-FICTIF-001"),
+            _ligne("ABC", statut="Lot 1", contrat=second, delai="30 jours"),
+        ])
+    message = str(erreur.value)
+    assert "ABC" in message and "CTR-FICTIF-001" in message
+
+
+@pytest.mark.parametrize(
+    "contrats", [(None, "CTR-FICTIF-001"), ("CTR-FICTIF-001", "   ")], ids=["sans-puis-avec", "avec-puis-sans"],
+)
+def test_t_reg_46_ligne_sans_contrat_a_cote_d_un_contrat_refusee(contrats):
+    """T-REG-46 — quand une école a plusieurs lignes, chacune porte son n° de contrat : une ligne sans
+    n° à côté d'une ligne avec n° est refusée (`ValueError` qui nomme l'école et la colonne « N° de
+    contrat ») ; la règle à appliquer n'est jamais devinée."""
+    premier, second = contrats
+    with pytest.raises(ValueError) as erreur:
+        _module().regles_par_ecole([
+            _ligne("ABC", statut="Lot 1", contrat=premier),
+            _ligne("ABC", statut="Lot 1", contrat=second),
+        ])
+    message = str(erreur.value)
+    assert "ABC" in message and "N° de contrat" in message
+
+
+def test_t_reg_47_deux_lignes_sans_contrat_toujours_refusees():
+    """T-REG-47 — deux lignes sans n° de contrat pour une même école restent une `ValueError` (§ 16),
+    dont le message nomme l'école et la colonne « N° de contrat » : c'est elle qui permet d'avoir une
+    ligne par contrat."""
+    with pytest.raises(ValueError) as erreur:
+        _module().regles_par_ecole([_ligne("ABC", statut="Lot 1"), _ligne("ABC", statut="Plus tard")])
+    message = str(erreur.value)
+    assert "ABC" in message and "N° de contrat" in message
+
+
+def test_t_reg_48_contrats_distincts_sans_message_de_doublon():
+    """T-REG-48 — trois contrats d'une même école, plus une autre école : aucune erreur, quatre règles,
+    une par (école, contrat) (la garde de T-REG-45 ne refuse pas des contrats distincts)."""
+    regles = _module().regles_par_ecole([
+        _ligne("ABC", contrat="CTR-FICTIF-001"), _ligne("ABC", contrat="CTR-FICTIF-002"),
+        _ligne("ABC", contrat=12345.0), _ligne("ECO", contrat="CTR-FICTIF-001"),
+    ])
+    assert sorted(regles) == [("ABC", "12345"), ("ABC", "CTR-FICTIF-001"), ("ABC", "CTR-FICTIF-002"),
+                              ("ECO", "CTR-FICTIF-001")]
+    assert all(regle.ecole == cle[0] and regle.n_contrat == cle[1] for cle, regle in regles.items())
