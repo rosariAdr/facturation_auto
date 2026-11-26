@@ -1,317 +1,201 @@
-# ONBOARDING — Processus nouveau client
+# ONBOARDING — Ajouter une école
 
-**Dernière mise à jour** : 2026-05-04
+**Dernière mise à jour** : 2026-11-23
 
-> Checklist exhaustive A→Z pour intégrer une nouvelle école/client dans le système. À suivre **dans l'ordre** sans sauter d'étape.
+> La checklist pour intégrer une nouvelle école dans une entité (ADR011). À suivre **dans l'ordre**. Toutes les informations recueillies sont des données réelles : elles vont dans le MASTER de l'entité (ADR026), jamais dans le dépôt. Les exemples ci-dessous sont fictifs.
 
 ---
 
 ## Vue d'ensemble
 
-| Phase | Acteur | Durée |
+| Phase | Acteur | Résultat |
 |---|---|---|
-| 1. Collecte info légale | Client + Adrian/Parv | Variable |
-| 2. Collecte info pédagogique | Client + Adrian/Parv | Variable |
-| 3. Création technique | Claude Code | ~10 min |
-| 4. Validation par facture pilote | Adrian/Parv | ~15 min |
+| 1. Informations légales et financières | École + Adrian ou Parv | Identité, contacts, conditions de paiement, références |
+| 2. Informations pédagogiques | École + Adrian ou Parv | Missions, heures facturables, code école |
+| 3. Saisie dans le MASTER | Adrian ou Parv, avec un agent | Lignes du MASTER complètes, aperçu validé avant chaque écriture |
+| 4. Facture pilote | Adrian ou Parv | Une facture vérifiée point par point, école déclarée active |
 
 ---
 
-## Phase 1 — Collecte des informations légales
+## Phase 1 — Informations légales et financières
 
-> **Cette phase est blocante** : sans ces données, aucune facture ne peut être émise légalement.
+> **Phase bloquante** : sans ces données, aucune facture ne peut être émise correctement (ADR030).
 
-### 1.1 — Identité légale du client
-
-À demander **par écrit** au contact opérationnel :
+### 1.1 — Identité du client
+À demander **par écrit**, ou à lire dans le contrat :
 
 ```
-□ Raison sociale exacte (telle qu'elle apparaîtra sur la facture)
-□ N° SIRET (ou équivalent étranger)
-□ Forme juridique (SAS, SARL, association...)
-□ Adresse de facturation complète (L1, L2, L3, code postal, ville)
-□ Adresse de prestation (si différente de facturation)
-□ Pays
+□ Dénomination juridique exacte de la société qui paie, telle qu'écrite au contrat
+  (ce n'est pas forcément le nom commercial de l'école)
+□ N° SIRET (ou équivalent étranger) et forme juridique
+□ Adresse de facturation complète (rue, code postal, ville, pays)
+□ Adresse de prestation, si elle diffère
+□ N° de TVA du client : vérifier s'il doit figurer sur la facture (pas requis dans les cas vérifiés jusqu'ici)
 ```
 
 ### 1.2 — Contacts
-
-Distinguer **deux contacts** (peuvent être la même personne) :
-
-```
-□ CONTACT OPÉRATIONNEL (RH / responsable pédagogique)
-   - Nom, prénom
-   - Email
-   - Téléphone (optionnel)
-
-□ CONTACT COMPTABILITÉ (à qui envoyer les factures)
-   - Nom, prénom (ou "Service Comptabilité" / "AP — Accounts Payable")
-   - Email à utiliser pour envoi
-   - Process particulier ?
-     □ Portail fournisseur dédié (URL, login)
-     □ Email seulement
-     □ Courrier postal aussi
-```
-
-### 1.3 — Conditions financières
+Distinguer deux contacts, qui peuvent être la même personne :
 
 ```
-□ Taux horaire négocié HT (€/h)
-□ Modalité de facturation
-   □ Horaire pur (heures × taux)
-   □ Forfait
-   □ Mixte (préciser)
-□ Délai de paiement
-   □ 30 jours net
-   □ Fin de mois
-   □ 45 jours fin de mois
-   □ Autre (préciser)
-□ Mode de paiement
-   □ Virement (par défaut)
-   □ Autre
-□ Bon de commande (PO) requis avant facturation ?
-   □ NON
-   □ OUI — processus :
-      ▸ Comment obtenir le PO ?
-      ▸ N° de PO à mentionner sur la facture (oui/non)
-      ▸ Devis préalable obligatoire (oui/non)
+□ Contact pédagogique (responsable de programme) : nom, email
+□ Contact facturation (à qui envoyer les factures) : nom ou service, email
+□ Canal d'envoi : email, portail fournisseur, plateforme de l'école, courrier postal
+□ Pièces à joindre : PDF seul, ou PDF + récapitulatif demandé par l'école
 ```
 
-### 1.4 — Annexes éventuelles
+### 1.3 — Conditions financières et références
 
 ```
-□ Mentions spécifiques à apposer sur la facture (ex. "Bon de commande n° XXX")
-□ Numéro de fournisseur attribué par le client (si le client en attribue)
-□ Conditions générales de vente échangées (oui/non)
-□ Contrat de prestation signé (oui/non, si oui : date)
+□ Taux horaire HT, et la référence du contrat qui le fixe (le contrat fait foi, ADR026)
+□ Modalité : à l'heure, au forfait, ou mixte
+□ Délai de paiement prévu par le contrat ou par l'école
+  (vide = date d'émission + 30 jours, ADR030)
+□ N° de contrat à afficher sur la facture ; plusieurs contrats → une facture par contrat ?
+□ Bon de commande : l'école en émet-elle un avant la prestation ?
+  ▸ si oui : comment l'obtenir, et une facture par ligne de bon de commande ?
+□ Rythme : mensuel (par défaut), fin de module, ou cycle propre à l'école
+  ▸ si cycle : jour de début, date et heure limites d'envoi
+```
+
+### 1.4 — Mentions particulières
+
+```
+□ Mentions demandées par l'école en plus de celles de l'ADR030
+  (ex. n° de déclaration d'activité, code du module)
+□ N° de fournisseur attribué par l'école, s'il y en a un
+□ Contrat signé : oui / non, date
 ```
 
 ---
 
-## Phase 2 — Collecte des informations pédagogiques
+## Phase 2 — Informations pédagogiques
 
-### 2.1 — Mission(s)
-
-Pour **chaque mission** confiée :
+### 2.1 — Missions
+Pour **chaque mission** :
 
 ```
-□ Module / Matière (ex. "Mathematics for Data Science")
-□ Programme / Promotion (ex. "Master 2 DIA", "BTS SIO 1ère année")
+□ Module / matière (ex. « Statistiques appliquées »)
+□ Programme / promotion (ex. « M1 groupe A »)
 □ Volume contractuel total (heures)
-□ Période contractuelle
-   ▸ Date de début
-   ▸ Date de fin (estimée si pas figée)
-□ Fréquence approximative (ex. "1 séance/semaine de 3h")
+□ Période : date de début, date de fin (estimée si besoin)
+□ Fréquence approximative (ex. « une séance de 3 h par semaine »)
 ```
 
-### 2.2 — Convention horaire
-
-**Critique pour le calcul** : le coefficient horaire de l'école est porté par l'onglet `Conventions_horaires` du MASTER (cf. [MASTER_SCHEMA.md](MASTER_SCHEMA.md)). Sans convention pour le couple école/module, le PCF s'arrête à l'étape 3.2.
-
-```
-□ Heures planifiées dans le calendrier par séance type
-□ Heures réellement facturables par séance type
-□ Différence éventuelle (pauses repas, pauses techniques)
-□ Coefficient à appliquer (calculé)
-□ Justification (à documenter)
-```
-
-Exemples de conventions actuelles :
-- DOR M2 RMD : 8h cal = 8h facturable (1:1)
-- DOR M2 DIA : 9h cal = 7h facturable (pause non facturée)
-- CDP Masters : 9h cal = 8h facturable (1h pause)
-
-### 2.3 — Code école interne
-
-À définir avec Adrian (ou Parv selon entité) :
+### 2.2 — Heures facturables
+Comment passer des heures de l'agenda aux heures facturées. La règle va dans l'onglet `Correspondances` (colonnes « Mode heures » et « Valeur », ADR016).
 
 ```
-□ Code court (3-6 caractères, MAJUSCULES)
-   ex. DOR, EPITA, ISG, EMN, CDP, ASC, IDRAC, ESCA, IFAG
-□ Vérifier l'unicité au sein de l'entité (pas de collision)
-□ Préfixe entité (R_ ou K_) sera ajouté automatiquement à la numérotation
+□ Mode « agenda » (par défaut) : heures facturées = heures de l'agenda
+□ Mode « coefficient » : ex. 9 h d'agenda = 7 h facturées (pause non facturée), coefficient 7/9
+□ Mode « forfait » : ex. un jury de 7 h d'agenda facturé 7,5 h
+□ Justification de la règle (contrat, échange écrit avec l'école)
+```
+
+Sans règle, l'outil facture les heures de l'agenda. Un créneau qu'il ne reconnaît pas va dans la file à classer et n'est jamais facturé par défaut (ADR028).
+
+### 2.3 — Code école
+
+```
+□ Code de 3 lettres en majuscules pour toute nouvelle école (ADR029), ex. ABC
+□ Vérifier qu'il est libre dans l'entité
+□ Le préfixe d'entité (R_ ou K_) s'ajoute à la numérotation : R_ABC001
 ```
 
 ---
 
-## Phase 3 — Création technique (Claude Code)
+## Phase 3 — Saisie dans le MASTER
 
-> **Acteur** : Claude Code (App, onglet Code).
->
-> **Pré-requis** : Phase 1 et Phase 2 complètes et validées par Adrian/Parv.
+> **Pré-requis** : phases 1 et 2 complètes et validées par Adrian ou Parv. Chaque écriture dans le MASTER est précédée d'un aperçu et d'une validation explicite.
 
-### Prompt à utiliser
+Schéma de chaque onglet : [MASTER_SCHEMA.md](MASTER_SCHEMA.md). Un onglet marqué « prévu » dans le schéma se remplit dès qu'il existe.
 
-Copier-coller dans Claude Code après avoir rempli les variables :
+| Onglet | Ce qu'on ajoute |
+|---|---|
+| `Écoles` | Une ligne : école, code, entité légale, contact, email, statut de mission |
+| `Coordonnées` | Une ligne `Destinataire` : code, dénomination juridique, adresse, email. Aucune ligne `Info` pour l'école : ces lignes sont réservées à l'émetteur |
+| `Tarifs` | Une ligne par module et programme : taux HT, notes, référence du contrat |
+| `Règles_facturation` | Statut dans les lots, rythme ou cycle, date limite, délai de paiement, n° de contrat, bon de commande, colonne Jour, regroupement, canal, pièces jointes |
+| `Correspondances` | Une ligne par intitulé ou code d'événement : école, module, promotion, clé tarif, mode heures, valeur |
+| `Cours` | Une ligne par mission : volume contractuel, heures dispensées = 0, facturées = 0, à facturer = 0, statut « À planifier » |
+
+Le dossier `<ENTITE>/<CODE>/` et le classeur `<ENTITE>_<CODE>.xlsx` sont créés à la première facture : rien à préparer à la main.
+
+Contrôle : `facturation profil verifier` puis `python scripts/check_coherence.py --entite <ENTITE>`.
+
+### Brief à donner à un agent
 
 ```
-Onboarding nouveau client
+Onboarding d'une école (references/ONBOARDING.md, phase 3)
 
 ENTITÉ : [ROSARI ou KAUR]
-ÉCOLE : [Nom complet]
-CODE : [Code court]
+ÉCOLE : [nom] — CODE : [3 lettres]
 
-Données légales :
-- Raison sociale : [...]
-- SIRET : [...]
-- Adresse facturation : [...]
-- Contact opérationnel : [Nom, email]
-- Contact comptabilité : [Nom, email]
-- Délai paiement : [...]
-- PO requis : [oui/non, modalités]
+Montre un aperçu avant chaque écriture dans le MASTER et attends ma validation.
+N'invente aucune valeur : demande-moi ce qui manque.
 
-Données pédagogiques (mission 1, dupliquer si plusieurs) :
-- Module : [...]
-- Programme : [...]
-- Volume contractuel : [X]h
-- Période : [date début → date fin]
-- Convention horaire : [Hcal]/[Hfact] (coef [X.XXX])
+Données légales et financières : [phase 1]
+Données pédagogiques : [phase 2]
 
-Actions à exécuter (dans l'ordre, en montrant aperçu avant chaque écriture) :
-
-1. Ajouter ligne dans [ENTITE]_MASTER.xlsx > Écoles
-   Code | Nom | Entité légale | Contact opérationnel | Email contact | Statut mission = Active
-
-2. Ajouter ligne dans [ENTITE]_MASTER.xlsx > Tarifs
-   Code | Module | Programme | Taux HT/h | Notes (PO si applicable)
-
-3. Ajouter ligne(s) dans [ENTITE]_MASTER.xlsx > Coordonnées
-   Type=Destinataire | Code | Nom complet | Adresse L1/L2/L3 | Email | Téléphone
-   + ligne Info pour SIRET du client
-
-4. Ajouter ligne(s) dans [ENTITE]_MASTER.xlsx > Conventions_horaires
-   Code | Module/Programme | H calendrier | H facturable | Coefficient | Justification
-
-5. Ajouter ligne dans [ENTITE]_MASTER.xlsx > Cours
-   Code | Module | Programme | Volume contractuel | H dispensées=0 | H facturées=0
-   | H à facturer=0 | N° Devis lié=vide | N° Facture liée=vide | Statut=À planifier
-
-6. Créer dossier [ENTITE]/[CODE_OU_NOM]/ s'il n'existe pas
-
-7. Créer fichier [ENTITE]/[CODE_OU_NOM]/[ENTITE]_[CODE].xlsx
-   - Onglet "Modèle" basé sur _templates/PCF_facture_canonical.xlsx
-   - Aucun onglet de facture (sera créé au premier PCF)
-
-8. Mettre à jour CONTEXT.md
-   - Ajouter l'école dans la section "Écoles actives" de la bonne entité
-   - Si nouveau code, ajouter règle de classification calendrier
-   - Mettre à jour la date "Dernière mise à jour"
-
-9. Mettre à jour TASKS.md
-   - Cocher la case "Onboarding [Nom école] terminé" si déjà tracée
-   - Sinon, ajouter ligne ✅ Déjà fait
-
-Fournir à la fin un récap des modifications effectuées + un lien vers la facture pilote
-à émettre en Phase 4.
+À faire : compléter Écoles, Coordonnées, Tarifs, Règles_facturation,
+Correspondances et Cours, puis lancer les deux contrôles et me donner le résultat.
 ```
 
 ---
 
-## Phase 4 — Validation par facture pilote
+## Phase 4 — Facture pilote
 
-> **Objectif** : valider le bout-en-bout avant de considérer l'école comme opérationnelle.
+> **Objectif** : vérifier la chaîne de bout en bout avant de déclarer l'école active.
 
-### 4.1 — Émission d'une facture pilote
+### 4.1 — Émettre la facture pilote
+- **Cas A, des heures ont déjà été faites** : émettre la première vraie facture en suivant [PROC00_pcf.md](PROC00_pcf.md).
+- **Cas B, aucune heure faite** : produire une facture fictive dans une racine de données de test (voir [RECETTE_DOC.md](RECETTE_DOC.md)), jamais dans le MASTER réel.
 
-Soit :
-- **Cas A — Données réelles disponibles** : émettre la première vraie facture pour les heures déjà dispensées (suivre [PROC00_pcf.md](PROC00_pcf.md)).
-- **Cas B — Pas encore de cours dispensés** : émettre une facture **pilote fictive** (1h, montant symbolique) pour valider la chaîne, à supprimer ensuite.
-
-### 4.2 — Vérifications obligatoires sur la facture pilote
+### 4.2 — Vérifications obligatoires (ADR030)
 
 ```
-□ Émetteur (ROSARI ou KAUR) : nom, adresse, email, téléphone, SIRET, IBAN/BIC corrects
-□ Destinataire : raison sociale exacte, adresse complète, contact comptabilité
-□ N° de facture au bon format (R_<CODE>NNN ou K_<CODE>NNN)
-□ Mention TVA non applicable — art. 293B CGI
-□ Date d'émission cohérente
-□ Délai de paiement mentionné
-□ Mentions légales (pénalités) présentes
-□ Tableau des séances : date, durée, taux, montant
-□ Total HT correctement calculé
-□ Si PO requis : N° de PO mentionné
-□ Format visuel conforme au template canonique
-□ Export PDF généré sans erreur
+□ Émetteur : nom suivi de « EI », adresse, email, téléphone, SIRET ; IBAN et BIC corrects
+□ Client : dénomination juridique exacte, adresse de facturation complète
+□ N° de facture au bon format (R_ABC001), n° de contrat et n° de bon de commande sur des lignes distinctes
+□ Date d'émission au 1er du mois suivant ; date d'échéance explicite
+□ Tableau des séances : date, durée, taux, montant ; total HT juste
+□ « Total HT », mention « TVA non applicable, article 293 B du Code général des impôts », « Net à payer »
+□ Pénalités de retard, indemnité forfaitaire de 40 €, « Pas d'escompte »
+□ N° de déclaration d'activité
+□ Mentions particulières demandées par l'école
+□ Une seule page ; PDF généré sans erreur
 ```
 
-### 4.3 — Test envoi (si possible)
-
-Avant la première vraie facture, **tester l'envoi** sur sa propre adresse :
-
-```
-□ Brouillon Gmail créé
-□ Pièce jointe PDF lisible
-□ Pièce jointe XLSX non corrompue
-□ Objet du mail clair
-□ Corps du mail professionnel
-□ Signature présente
-```
+### 4.3 — Essai d'envoi
+Avant la première vraie facture, préparer un brouillon de mail adressé à soi-même : objet clair, PDF lisible en pièce jointe, signature. Aujourd'hui à la main ; par l'outil au lot 2 (F-32), qui ne joindra que le PDF.
 
 ### 4.4 — Validation finale
 
 ```
-□ Adrian/Parv valide visuellement la facture pilote
-□ Si OK : statut école → Active, prêt pour production
-□ Si KO : retour Phase 1/2/3 selon le problème, ne pas envoyer au client
-```
-
----
-
-## Checklist récapitulative
-
-À cocher une fois l'onboarding complet :
-
-```
-PHASE 1 — Légal
-  □ Identité légale collectée
-  □ Contacts opérationnel et comptabilité distincts identifiés
-  □ Conditions financières actées (taux, délai, PO)
-
-PHASE 2 — Pédagogique
-  □ Mission(s) détaillée(s)
-  □ Convention horaire documentée
-  □ Code école interne défini et unique
-
-PHASE 3 — Technique
-  □ MASTER mis à jour : Écoles, Tarifs, Coordonnées, Conventions_horaires, Cours
-  □ Dossier et fichier école créés
-  □ CONTEXT.md mis à jour
-  □ TASKS.md mis à jour
-
-PHASE 4 — Validation
-  □ Facture pilote émise et validée visuellement
-  □ Test envoi effectué (sur sa propre adresse)
-  □ Statut école → Active
+□ Adrian ou Parv valide visuellement la facture pilote
+□ Si c'est bon : statut de l'école → active, et statut dans les lots renseigné
+□ Sinon : retour à la phase 1, 2 ou 3 selon le problème ; rien n'est envoyé à l'école
 ```
 
 ---
 
 ## Cas particuliers
 
-### Migration d'une école existante non-onboardée formellement
-
-Pour les écoles déjà actives mais sans onboarding propre (ex. EMN au statut actuel) :
-
-1. Faire la **Phase 1** rétroactivement (collecter les infos manquantes)
-2. Compléter le MASTER (Coordonnées, Conventions_horaires si manquantes)
-3. Sauter la Phase 4 si des factures ont déjà été émises
+### École déjà active, jamais onboardée
+1. Faire la phase 1 après coup (recueillir ce qui manque, notamment la dénomination juridique et le délai de paiement).
+2. Compléter le MASTER.
+3. Sauter la phase 4 si des factures ont déjà été émises et vérifiées.
 
 ### Mission ponctuelle (jury, intervention courte)
+- Phase 1 : le minimum (dénomination, SIRET, contact facturation, taux ou forfait, délai).
+- Phase 2 : seulement la règle d'heures si elle diffère de l'agenda.
+- Phase 3 : statut de mission « Ponctuelle ».
+- Phase 4 : la facture unique sert de facture pilote.
 
-Process allégé :
-- Phase 1 : minimum vital (raison sociale, SIRET, contact, taux/forfait)
-- Phase 2 : skip
-- Phase 3 : statut mission = `Ponctuelle` au lieu d'`Active`
-- Phase 4 : facture unique = la facture pilote
-
-### École sur deux entités (ex. CDP International présente sur ROSARI ET KAUR)
-
-**Étanchéité absolue** (cf. [ADR001](ADR.md)) : faire l'onboarding **deux fois**, une dans chaque MASTER. Pas de mutualisation des données.
+### École présente dans les deux entités
+**Étanchéité absolue** (ADR001) : faire l'onboarding deux fois, une fois dans chaque MASTER. Aucune donnée partagée.
 
 ---
 
-## Documents à fournir au client
+## Documents à fournir à l'école (idée)
 
-Pour faciliter sa Phase 1, on peut lui transmettre un formulaire récapitulatif. À créer (cf. ticket à venir) :
-- `_templates/onboarding_form.docx` — formulaire pré-rempli pour le client
-- `_templates/onboarding_form.pdf` — version PDF imprimable
+Un formulaire qui reprend la phase 1, pour que l'école le remplisse. Pas encore créé.
