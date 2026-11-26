@@ -10,7 +10,7 @@ Lot 1 :
     facturation agenda lire --mois AAAA-MM [--profil CHEMIN] [--fichier AGENDA.ics]
     facturation audit [--mois AAAA-MM | --du JJ/MM/AAAA --au JJ/MM/AAAA] [--ecoles ABC,ECO]   # F-19
 
-Les commandes `preparer`, `emettre`, `audit` et `classer` arrivent au lot 1.
+Les commandes `preparer`, `emettre` et `classer` arrivent au lot 1.
 
 Répartition (P-0b) : chaque sous-commande vit dans un module de `facturation.commandes` qui
 expose `ajouter(sous)` ; `_COMMANDES` les liste, un par ligne (ajouter en fin de liste), et

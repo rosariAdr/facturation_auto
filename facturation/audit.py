@@ -31,10 +31,17 @@ Lectures retenues (`💡 [proposé — à valider]`, là où le contrat se tait)
 - une séance à venir est appariée comme les autres (sa ligne, facture produite en avance, n'est
   pas « facturée absente ») mais ne donne jamais d'écart d'heures ; seul le doublon de ses lignes
   (double facturation déjà faite) est signalé ;
-- une école est `Hors facturation` quand toutes ses lignes de `Règles_facturation` le disent ;
-  une école sans règle est auditée ; une école est « à bon de commande » dès qu'une de ses
-  lignes le demande ; les lignes `Sessions` d'une école non auditée sont ignorées comme ses
-  séances ;
+- une école est `Hors facturation` quand toutes ses lignes de `Règles_facturation` le disent, lues
+  telles quelles : une ligne `Hors facturation` illisible (écartée par `regles_par_ecole`,
+  avertissement `RegleEcartee`) garde l'école hors facturation ; une école sans règle est
+  auditée ; une école est « à bon de commande » dès qu'une de ses lignes lisibles le demande ; les
+  lignes `Sessions` d'une école non auditée sont ignorées comme ses séances ;
+- la colonne `École` de `Correspondances` porte le code ou le libellé de l'onglet `Écoles` (§ 15) :
+  toutes ses lignes sont lues, comme dans `classement.classer`, et un libellé inconnu ou porté par
+  plusieurs codes lève `ValueError` (onglet, ligne, valeur), jamais un faux code d'école ;
+- `maintenant` porte un fuseau (§ 1.2) : sans fuseau, `ValueError` ;
+- `RapportAudit.sans_ecart` attend un code d'école auditée : un libellé, ou une école que le
+  rapport n'a pas auditée, lève `ValueError` plutôt que de répondre « sans écart » à tort ;
 - les niveaux « début », « intitulé » et « cours » ne prennent que des lignes qui portent leurs
   deux heures ; une ligne à laquelle il manque le début ou la fin est « sans heure » (comme dans
   `sessions.chercher`) et n'entre qu'au niveau 5. Le niveau « cours » exige une promotion ou un
@@ -46,6 +53,18 @@ Lectures retenues (`💡 [proposé — à valider]`, là où le contrat se tait)
 - une même situation de doublon (plusieurs lignes pour une séance, lignes identiques entre elles)
   donne un seul écart « doublon », qui porte toutes ses lignes, et jamais en plus une « tenue non
   facturée », une « facturée absente » ou un écart d'heures ;
+- revue de F-19, lignes sans heure : `apparier` suit le contrat (une pour une si les nombres sont
+  égaux, sinon la raison) ; `auditer` lit ensuite la journée. Plus de lignes sans heure que de
+  séances restées seules (au moins une) : les séances et ces lignes forment un seul « doublon »
+  (séance facturée deux fois), jamais une « tenue non facturée » qui pousserait à la facturer
+  encore. Aucune séance restée seule, et toutes les séances du jour dans une même situation (une
+  séance, le plus souvent) : la ligne sans heure en plus rejoint son « doublon ». Plusieurs
+  situations ce jour-là : « facturée absente », dont le détail cite les séances du jour et leurs
+  lignes (doublon possible). Moins de lignes que de séances : « tenue non facturée » et
+  « facturée absente » portent la raison, et ne disent ni « aucune ligne » ni « aucune séance » ;
+- revue de F-19, doublon d'agenda : deux séances de l'agenda au même créneau, dont l'une au moins
+  a sa ligne, forment un « doublon » avec ses lignes (une seule ligne suffit) : jamais une « tenue
+  non facturée » muette ; restées toutes seules, chacune le signale (« à vérifier ») ;
 - une séance et une ligne de la même école, le même jour, à d'autres heures (constat de la revue
   de P-0b) : si elles sont rapprochées (niveaux 2 à 4), l'écart dit « à vérifier : même jour,
   autres heures » et nomme la ligne (« écart d'heures » si les heures diffèrent, « heures
@@ -63,9 +82,11 @@ Lectures retenues (`💡 [proposé — à valider]`, là où le contrat se tait)
   d'émission « émise » ne porte son identifiant ; des pièces illisibles retirent toute annotation ;
   une préparation illisible ou d'une autre entité est ignorée et notée (`RapportAudit.notes`) ;
 - le .txt est en UTF-8 sans BOM, comme les autres textes de l'outil ; le .csv en UTF-8 avec BOM,
-  séparateur « ; », décimales à la virgule (Excel en français) ; une cellule de texte qui
-  commencerait par = + - ou @ est préfixée d'une apostrophe, pour qu'Excel ne la lise jamais
-  comme une formule.
+  séparateur « ; », décimales à la virgule (Excel en français). Chaque cellule de texte du .csv
+  est masquée seule (§ 1.6 : une adresse devient « <adresse masquée> » sans avaler les « ; » qui
+  suivent), puis, si elle commence par = + - @, une tabulation, un retour chariot, un saut de ligne
+  (liste OWASP) ou leurs formes pleine chasse, préfixée d'une apostrophe, pour qu'Excel ne la lise
+  jamais comme une formule ; l'identifiant d'un brouillon compris.
 """
 
 from __future__ import annotations
@@ -88,6 +109,7 @@ from facturation.agenda import Seance
 from facturation.classement import SeanceAClasser, SeanceClassee, classer
 from facturation.heures import heures_facturables
 from facturation.master import Master, lire_master
+from facturation.numerotation import valider_code_ecole
 from facturation.regles import RegleEcole, regles_par_ecole
 from facturation.sessions import LigneSessions, code_ecole, lire_sessions
 
@@ -130,6 +152,9 @@ _RAISONS_A_CLASSER = {
     "code inconnu": "son code d'événement est absent de l'onglet Correspondances, ou mal formé",
 }
 _ONGLET_SESSIONS = "Sessions"
+_ONGLET_CORRESPONDANCES = "Correspondances"
+# Débuts de cellule qu'Excel peut lire comme une formule (liste OWASP, et formes pleine chasse).
+_DEBUTS_DE_FORMULE = ("=", "+", "-", "@", "\t", "\r", "\n", "＝", "＋", "－", "＠")
 _COLONNES_CSV = (
     "Nature", "École", "Date", "Début", "Fin", "Intitulé (agenda)", "Lignes Sessions", "N° facture",
     "Heures agenda", "Heures facturées", "Brouillon non émis", "Détail",
@@ -199,8 +224,26 @@ class RapportAudit:
     notes: tuple[str, ...] = ()
 
     def sans_ecart(self, ecole: str) -> bool:
-        """Vrai si aucun écart ne porte sur cette école (code, sans tenir compte de la casse)."""
+        """Vrai si aucun écart ne porte sur cette école (code, sans tenir compte de la casse).
+
+        Raises:
+            ValueError: 💡 valeur qui n'est pas un code d'école (un libellé de l'onglet `Écoles`,
+                par exemple), ou école que ce rapport n'a pas auditée : la réponse « sans écart »
+                serait fausse.
+        """
         code = _code(ecole)
+        try:
+            valider_code_ecole(code)
+        except ValueError:
+            raise ValueError(
+                f"« {ecole} » n'est pas un code d'école : désignez l'école par son code (colonne « Code "
+                "facturation » de l'onglet Écoles, ex. ABC)"
+            ) from None
+        if code not in self.ecoles:
+            raise ValueError(
+                f"école {code} non auditée par ce rapport (écoles auditées : {', '.join(self.ecoles) or 'aucune'}) : "
+                "impossible de dire qu'elle est sans écart"
+            )
         return not any(ecart.ecole == code for ecart in self.ecarts)
 
     @property
@@ -337,6 +380,26 @@ def _controler_periode(du: date, au: date) -> tuple[date, date]:
     if du > au:
         raise ValueError(f"période inversée : du {du:%d/%m/%Y} au {au:%d/%m/%Y} (« du » doit précéder « au »)")
     return du, au
+
+
+def _controler_fuseau(maintenant: datetime) -> None:
+    """`ValueError` si `maintenant` n'a pas de fuseau (§ 1.2), au lieu d'une `TypeError` à la
+    première comparaison avec la fin d'une séance."""
+    if maintenant.tzinfo is None or maintenant.utcoffset() is None:
+        raise ValueError(
+            f"« maintenant » ({maintenant:%d/%m/%Y %H:%M}) n'a pas de fuseau horaire : passez un moment avec "
+            "le fuseau du profil (ex. Europe/Paris), ou rien pour l'heure du poste"
+        )
+
+
+def _jour_seance(classee: SeanceClassee) -> tuple[str, date]:
+    """Journée d'école d'une séance classée : (code école, date)."""
+    return _code(classee.ecole), classee.seance.date
+
+
+def _jour_ligne(ligne: LigneSessions) -> tuple[str, date | None]:
+    """Journée d'école d'une ligne de `Sessions` : (code école, Date_séance)."""
+    return _code(ligne.ecole), ligne.date_seance
 
 
 def _champ(objet: Any, nom: str) -> Any:
@@ -487,22 +550,66 @@ def _code_tolerant(valeur: Any, ecoles: Sequence[Mapping[str, Any]]) -> str:
         return _code(valeur)
 
 
-def _avec_code(classee: SeanceClassee, ecoles: Sequence[Mapping[str, Any]]) -> SeanceClassee:
+def _rangs_de(master: Master, attribut: str, lignes: Sequence[Any]) -> list[int]:
+    """Rangs Excel des lignes d'un onglet (`Master.rangs`) ; à défaut (MASTER construit à la main),
+    la i-ème ligne porte le rang i + 2."""
+    rangs = list((getattr(master, "rangs", None) or {}).get(attribut) or [])
+    return rangs if len(rangs) == len(lignes) else list(range(2, len(lignes) + 2))
+
+
+def _codes_correspondances(master: Master) -> dict[str, str]:
+    """Forme de comparaison de chaque valeur de la colonne `École` de `Correspondances` → code
+    facturation (§ 15 : code, ou libellé de l'onglet `Écoles`). Toutes les lignes sont lues.
+
+    Raises:
+        ValueError: libellé inconnu de l'onglet `Écoles`, ou porté par plusieurs codes ; le message
+            nomme l'onglet `Correspondances`, la ligne, la clé et la valeur.
+    """
+    codes: dict[str, str] = {}
+    lignes = master.correspondances
+    for rang, ligne in zip(_rangs_de(master, "correspondances", lignes), lignes):
+        valeur = ligne.get("École")
+        forme = _forme(valeur)
+        if not forme or forme in codes:
+            continue
+        try:
+            code = code_ecole(valeur, master.ecoles)
+        except ValueError as exc:
+            raise ValueError(
+                f"onglet « {_ONGLET_CORRESPONDANCES} », ligne {rang} (clé « {ligne.get('Clé')} »), colonne « École » : "
+                f"{exc}"
+            ) from exc
+        if code:
+            codes[forme] = code
+    return codes
+
+
+def _avec_code(classee: SeanceClassee, codes: Mapping[str, str]) -> SeanceClassee:
     """La séance classée, son école ramenée au code (la colonne `École` de `Correspondances` peut
-    porter le libellé)."""
-    code = _code_tolerant(classee.ecole, ecoles)
+    porter le libellé ; `codes` vient de `_codes_correspondances`)."""
+    code = codes.get(_forme(classee.ecole)) or _code(classee.ecole)
     return classee if code == classee.ecole else dataclasses.replace(classee, ecole=code)
 
 
-def _ecoles_hors_facturation(regles: Mapping[Any, RegleEcole]) -> set[str]:
-    """Écoles dont toutes les lignes de `Règles_facturation` sont `Hors facturation`."""
+def _statuts_regles(lignes: Iterable[Mapping[str, Any]]) -> dict[str, set[str]]:
+    """Code école → formes des `Statut lot` de ses lignes de `Règles_facturation`, lues telles
+    quelles : une ligne illisible, écartée par `regles_par_ecole` (`RegleEcartee`), compte aussi."""
     statuts: dict[str, set[str]] = {}
-    for regle in regles.values():
-        statuts.setdefault(regle.ecole, set()).add(_forme(regle.statut_lot))
+    for brute in lignes:
+        ligne = {unicodedata.normalize("NFC", str(cle)).strip(): valeur for cle, valeur in brute.items()}
+        ecole = _code(ligne.get("École"))
+        if ecole:
+            statuts.setdefault(ecole, set()).add(_forme(ligne.get("Statut lot")))
+    return statuts
+
+
+def _ecoles_hors_facturation(statuts: Mapping[str, set[str]]) -> set[str]:
+    """Écoles dont toutes les lignes de `Règles_facturation` sont `Hors facturation`."""
     return {ecole for ecole, vus in statuts.items() if vus == {_forme(STATUT_HORS_FACTURATION)}}
 
 
 def _filtre_ecoles(ecoles: Sequence[str] | None, master: Master, regles: Mapping[Any, RegleEcole],
+                   statuts: Mapping[str, set[str]], codes_correspondances: Mapping[str, str],
                    classees: Sequence[SeanceClassee], lignes: Sequence[LigneSessions]) -> set[str] | None:
     """Codes des écoles demandées ; None sans filtre.
 
@@ -517,9 +624,9 @@ def _filtre_ecoles(ecoles: Sequence[str] | None, master: Master, regles: Mapping
     demandees = [valeur for valeur in ecoles if _code(valeur)]
     if not demandees:
         raise ValueError("liste d'écoles vide : nommez au moins une école (code de Règles_facturation ou de Écoles)")
-    connues = {regle.ecole for regle in regles.values()}
+    connues = {regle.ecole for regle in regles.values()} | set(statuts)
     connues |= {_code(ligne.get("Code facturation")) for ligne in master.ecoles}
-    connues |= {_code_tolerant(ligne.get("École"), master.ecoles) for ligne in master.correspondances}
+    connues |= set(codes_correspondances.values())
     connues |= {classee.ecole for classee in classees}
     connues |= {ligne.ecole for ligne in lignes}
     connues.discard("")
@@ -596,17 +703,22 @@ def auditer(*, entite: str, du: date, au: date, seances: Sequence[Seance], maste
         brouillons: brouillons non émis (F-16a), lus par `identifiant` et `lignes[].cle_seance`.
 
     Raises:
-        ValueError: période inversée ; liste d'écoles vide ou école inconnue ; ligne mal formée de
-            `Correspondances` ou de `Règles_facturation` (message du module qui la lit).
+        ValueError: période inversée ; `maintenant` sans fuseau ; liste d'écoles vide ou école
+            inconnue ; ligne mal formée de `Correspondances` ou de `Règles_facturation` (message du
+            module qui la lit) ; `École` de `Correspondances` inconnue de l'onglet `Écoles`, ou
+            ambiguë (§ 15).
     """
     du, au = _controler_periode(du, au)
+    _controler_fuseau(maintenant)
     regles = regles_par_ecole(master.regles_facturation)
     classees_brutes, a_classer = classer(seances, master.correspondances)
+    codes_correspondances = _codes_correspondances(master)
     lignes, illisibles = lire_sessions(master)
-    classees = [_avec_code(classee, master.ecoles) for classee in classees_brutes]
-    hors = _ecoles_hors_facturation(regles)
+    classees = [_avec_code(classee, codes_correspondances) for classee in classees_brutes]
+    statuts = _statuts_regles(master.regles_facturation)
+    hors = _ecoles_hors_facturation(statuts)
     bon_de_commande = {regle.ecole for regle in regles.values() if regle.bc_requis}
-    filtre = _filtre_ecoles(ecoles, master, regles, classees, lignes)
+    filtre = _filtre_ecoles(ecoles, master, regles, statuts, codes_correspondances, classees, lignes)
     notes: list[str] = []
     if filtre is not None:
         for code in sorted(filtre & hors):
@@ -668,33 +780,75 @@ def auditer(*, entite: str, du: date, au: date, seances: Sequence[Seance], maste
 
     ecarts: list[Ecart] = []
 
-    # Doublons : plusieurs lignes pour une séance, ou lignes identiques (école, date, début, fin),
-    # tous N° confondus. Une situation = un seul écart.
+    # Journées d'école : toutes les séances auditées (tenues et à venir), les séances restées
+    # seules, et les lignes sans heure restées seules.
+    lignes_de = {id(a.seance): a.lignes for a in rapprochement.appariements}
+    seances_jour: dict[tuple[str, date], list[SeanceClassee]] = {}
+    for classee in sorted(a_facturer + a_venir, key=_ordre_seance):
+        seances_jour.setdefault(_jour_seance(classee), []).append(classee)
+    seules_jour: dict[tuple[str, date], list[SeanceClassee]] = {}
+    for classee in rapprochement.agenda_seul:
+        seules_jour.setdefault(_jour_seance(classee), []).append(classee)
+    sans_heure_jour: dict[tuple[str, date | None], list[LigneSessions]] = {}
+    for ligne in rapprochement.sessions_seules:
+        if ligne.date_seance is not None and not _a_des_heures(ligne):
+            sans_heure_jour.setdefault(_jour_ligne(ligne), []).append(ligne)
+
+    # Doublons : plusieurs lignes pour une séance, lignes identiques (école, date, début, fin) tous
+    # N° confondus, séances de l'agenda au même créneau, lignes sans heure en trop. Une situation =
+    # un seul écart.
     ensembles = _Ensembles()
     objets: dict[int, SeanceClassee | LigneSessions] = {}
+
+    def lier(premier: SeanceClassee | LigneSessions, autre: SeanceClassee | LigneSessions) -> None:
+        objets[id(premier)] = premier
+        objets[id(autre)] = autre
+        ensembles.unir(id(premier), id(autre))
+
     for appariement in rapprochement.appariements:
         objets[id(appariement.seance)] = appariement.seance
         ensembles.trouver(id(appariement.seance))
         for ligne in appariement.lignes:
-            objets[id(ligne)] = ligne
-            ensembles.unir(id(appariement.seance), id(ligne))
+            lier(appariement.seance, ligne)
     identiques: dict[tuple, list[LigneSessions]] = {}
     for ligne in concernees:
         if _a_des_heures(ligne):
             identiques.setdefault((ligne.ecole, ligne.date_seance, _hm(ligne.debut), _hm(ligne.fin)), []).append(ligne)
     for groupe in identiques.values():
         for ligne in groupe:
-            objets[id(ligne)] = ligne
-            ensembles.unir(id(groupe[0]), id(ligne))
+            lier(groupe[0], ligne)
+    # Doublon d'agenda : séances du même jour au même créneau, dont l'une au moins a sa ligne.
+    for liste in seances_jour.values():
+        par_creneau: dict[tuple, list[SeanceClassee]] = {}
+        for classee in liste:
+            par_creneau.setdefault((_hm(classee.seance.debut), _hm(classee.seance.fin)), []).append(classee)
+        for groupe in par_creneau.values():
+            if len(groupe) > 1 and any(id(classee) in lignes_de for classee in groupe):
+                for classee in groupe:
+                    lier(groupe[0], classee)
+    # Lignes sans heure en trop : plus de lignes que de séances restées seules (au moins une), ou
+    # aucune séance restée seule et toutes les séances du jour dans une même situation.
+    for cle_jour, en_trop in sans_heure_jour.items():
+        seules = seules_jour.get(cle_jour, [])
+        toutes = seances_jour.get(cle_jour, [])
+        if seules and len(en_trop) > len(seules):
+            membres = [*seules, *en_trop]
+        elif not seules and toutes and len({ensembles.trouver(id(classee)) for classee in toutes}) == 1:
+            membres = [toutes[0], *en_trop]
+        else:
+            continue
+        for membre in membres:
+            lier(membres[0], membre)
+
     composantes: dict[int, list[SeanceClassee | LigneSessions]] = {}
     for cle, objet in objets.items():
         composantes.setdefault(ensembles.trouver(cle), []).append(objet)
     en_doublon: set[int] = set()
     for membres in composantes.values():
         lignes_c = sorted((m for m in membres if isinstance(m, LigneSessions)), key=_ordre_ligne)
-        if len(lignes_c) < 2:
-            continue
         seances_c = sorted((m for m in membres if isinstance(m, SeanceClassee)), key=_ordre_seance)
+        if len(lignes_c) < 2 and not (len(seances_c) > 1 and lignes_c):
+            continue
         en_doublon.update(id(m) for m in membres)
         principale = seances_c[0] if seances_c else None
         heures_agenda = None
@@ -704,11 +858,27 @@ def auditer(*, entite: str, du: date, au: date, seances: Sequence[Seance], maste
         heures_facturees = None if None in durees else _somme(durees)
         numeros = ", ".join(f"ligne {ligne.rang} ({ligne.n_facture or 'sans N°'})" for ligne in lignes_c)
         if principale is None:
-            objet = f"un même créneau {_plage(lignes_c[0].debut, lignes_c[0].fin)} absent de l'agenda"
+            detail = (f"{len(lignes_c)} lignes de {_ONGLET_SESSIONS} pour un même créneau "
+                      f"{_plage(lignes_c[0].debut, lignes_c[0].fin)} absent de l'agenda : {numeros} ; une séance ne "
+                      "se facture qu'une fois")
+        elif len(lignes_c) == 1:
+            creneaux = {(_hm(c.seance.debut), _hm(c.seance.fin)) for c in seances_c}
+            ou = " au même créneau" if len(creneaux) == 1 else ""
+            detail = (f"{len(seances_c)} séances de l'agenda{ou} ({' ; '.join(_desc_seance(c.seance) for c in seances_c)}) "
+                      f"pour une seule ligne de {_ONGLET_SESSIONS} : {numeros} ; doublon d'agenda probable : vérifiez "
+                      "l'agenda, une séance ne se facture qu'une fois")
         else:
             objet = "la " + " et la ".join(_desc_seance(c.seance) for c in seances_c)
-        detail = (f"{len(lignes_c)} lignes de {_ONGLET_SESSIONS} pour {objet} : {numeros} ; une séance ne se "
-                  "facture qu'une fois")
+            detail = (f"{len(lignes_c)} lignes de {_ONGLET_SESSIONS} pour {objet} : {numeros} ; une séance ne se "
+                      "facture qu'une fois")
+            sans_heure = [ligne for ligne in lignes_c if not _a_des_heures(ligne)]
+            if sans_heure:
+                pluriel = "s" if len(sans_heure) > 1 else ""
+                detail += (f" (ligne{pluriel} sans heure {_rangs(sans_heure)}, rapprochée{pluriel} par la seule date : "
+                           "à vérifier)")
+        raisons_c = sorted({rapprochement.raisons.get(chemins.cle_seance(c.seance), "") for c in seances_c} - {""})
+        if raisons_c:
+            detail += f" ({' ; '.join(raisons_c)})"
         if principale is not None and any(_autres_heures(c, ligne) for c in seances_c for ligne in lignes_c):
             detail = f"{_A_VERIFIER} — {detail}"
         ecarts.append(ecart(DOUBLON, lignes_c[0].ecole, lignes_c[0].date_seance,
@@ -742,30 +912,54 @@ def auditer(*, entite: str, du: date, au: date, seances: Sequence[Seance], maste
                                 f"à vérifier : {_desc_seance(seance)} rapprochée de la {_desc_ligne(ligne)} "
                                 f"(niveau « {appariement.niveau} »), {_h(calcul)} h des deux côtés"))
 
-    # Séances et lignes restées seules.
-    lignes_seules_jour: dict[tuple[str, date], list[LigneSessions]] = {}
+    # Séances et lignes restées seules (hors situations de doublon).
+    lignes_seules_jour: dict[tuple[str, date | None], list[LigneSessions]] = {}
     for ligne in rapprochement.sessions_seules:
         if id(ligne) not in en_doublon:
-            lignes_seules_jour.setdefault((_code(ligne.ecole), ligne.date_seance), []).append(ligne)
+            lignes_seules_jour.setdefault(_jour_ligne(ligne), []).append(ligne)
     seances_seules_jour: dict[tuple[str, date], list[SeanceClassee]] = {}
     for classee in rapprochement.agenda_seul:
-        seances_seules_jour.setdefault((_code(classee.ecole), classee.seance.date), []).append(classee)
+        if id(classee) not in en_doublon:
+            seances_seules_jour.setdefault(_jour_seance(classee), []).append(classee)
     a_classer_jour: dict[date, list[SeanceAClasser]] = {}
     for a_ranger in a_classer:
         a_classer_jour.setdefault(a_ranger.seance.date, []).append(a_ranger)
 
+    def seance_et_lignes(classee: SeanceClassee) -> str:
+        """Une séance du jour, et les lignes de `Sessions` qui la journalisent."""
+        rattachees = lignes_de.get(id(classee), ())
+        if not rattachees:
+            return _desc_seance(classee.seance)
+        return f"{_desc_seance(classee.seance)} (ligne{'s' if len(rattachees) > 1 else ''} {_rangs(rattachees)})"
+
     for classee in rapprochement.agenda_seul:
-        if id(classee) not in tenues:
+        if id(classee) not in tenues or id(classee) in en_doublon:
             continue
         seance = classee.seance
-        detail = f"{_desc_seance(seance)} ({classee.promotion or '—'} / {classee.module or '—'}) : aucune ligne de {_ONGLET_SESSIONS}"
+        cle_jour = _jour_seance(classee)
+        restantes = lignes_seules_jour.get(cle_jour, [])
+        sans_heure = [ligne for ligne in restantes if not _a_des_heures(ligne)]
+        autres = [ligne for ligne in restantes if _a_des_heures(ligne)]
+        detail = f"{_desc_seance(seance)} ({classee.promotion or '—'} / {classee.module or '—'}) : "
         raison = rapprochement.raisons.get(chemins.cle_seance(seance))
         if raison:
-            detail += f" ({raison})"
-        autres = [ligne for ligne in lignes_seules_jour.get((_code(classee.ecole), seance.date), [])
-                  if _a_des_heures(ligne)]
+            # Des lignes sans heure existent ce jour-là : jamais « aucune ligne ».
+            detail += f"non rapprochée, {raison}"
+            if sans_heure:
+                detail += " ; à vérifier, sans heure ce jour-là : " + " ; ".join(_desc_ligne(ligne) for ligne in sans_heure)
+        elif autres:
+            detail += f"aucune ligne de {_ONGLET_SESSIONS} à ces heures"
+        else:
+            detail += f"aucune ligne de {_ONGLET_SESSIONS}"
         if autres:
             detail += f" — {_A_VERIFIER} : " + " ; ".join(_desc_ligne(ligne) for ligne in autres)
+        jumelles = [
+            c for c in seances_jour.get(cle_jour, [])
+            if c is not classee and (_hm(c.seance.debut), _hm(c.seance.fin)) == (_hm(seance.debut), _hm(seance.fin))
+        ]
+        if jumelles:
+            detail += (" — à vérifier, doublon d'agenda possible : autre séance au même créneau, "
+                       + " ; ".join(_desc_seance(c.seance) for c in jumelles))
         calcul = facturables(classee)
         ecarts.append(ecart(TENUE_NON_FACTUREE, classee.ecole, seance.date, seance, [],
                             None if isinstance(calcul, ValueError) else calcul, None, detail))
@@ -773,14 +967,28 @@ def auditer(*, entite: str, du: date, au: date, seances: Sequence[Seance], maste
     for ligne in rapprochement.sessions_seules:
         if id(ligne) in en_doublon:
             continue
-        detail = f"{_desc_ligne(ligne, cours=True)} : aucune séance de l'agenda"
-        seules = seances_seules_jour.get((_code(ligne.ecole), ligne.date_seance), [])
-        if seules and _a_des_heures(ligne):
-            detail += f" — {_A_VERIFIER} : " + " ; ".join(_desc_seance(c.seance) for c in seules)
+        cle_jour = _jour_ligne(ligne)
+        toutes = seances_jour.get(cle_jour, [])
+        seules = seances_seules_jour.get(cle_jour, [])
+        detail = f"{_desc_ligne(ligne, cours=True)} : "
+        if not toutes:
+            detail += "aucune séance de l'agenda"
+        elif _a_des_heures(ligne):
+            detail += "aucune séance de l'agenda à ces heures"
+            if seules:
+                detail += f" — {_A_VERIFIER} : " + " ; ".join(_desc_seance(c.seance) for c in seules)
+            else:
+                detail += " ; séances du jour, déjà rapprochées : " + " ; ".join(seance_et_lignes(c) for c in toutes)
         elif seules:
+            # Moins de lignes sans heure que de séances : la raison, jamais « aucune séance ».
             raisons = sorted({rapprochement.raisons.get(chemins.cle_seance(c.seance), "") for c in seules} - {""})
+            detail += "ligne sans heure non rapprochée"
             if raisons:
                 detail += f" ({' ; '.join(raisons)})"
+            detail += " — séances restées seules ce jour-là : " + " ; ".join(_desc_seance(c.seance) for c in seules)
+        else:
+            detail += ("ligne sans heure en plus des séances du jour, toutes déjà rapprochées — doublon possible, "
+                       "à vérifier : " + " ; ".join(seance_et_lignes(c) for c in toutes))
         a_ranger = a_classer_jour.get(ligne.date_seance, [])
         if a_ranger:
             detail += " — créneau à classer ce jour-là : " + " ; ".join(_desc_seance(a.seance) for a in a_ranger)
@@ -835,7 +1043,8 @@ def auditer(*, entite: str, du: date, au: date, seances: Sequence[Seance], maste
                     f"lignes de {_ONGLET_SESSIONS} : {_rangs(g['lignes']) or 'aucune'})",
                 ))
 
-    rapprochees = {id(a.seance) for a in rapprochement.appariements}
+    # Une séance d'une situation de doublon a trouvé sa ou ses lignes (le doublon le dit).
+    rapprochees = {id(a.seance) for a in rapprochement.appariements} | en_doublon
     ecoles_auditees = (
         filtre - hors if filtre is not None else
         ({regle.ecole for regle in regles.values()} - hors)
@@ -910,11 +1119,15 @@ def rapport_texte(rapport: RapportAudit) -> str:
 
 
 def _cellule_sure(texte: str) -> str:
-    """Texte d'une cellule CSV qu'Excel ne lira jamais comme une formule."""
-    return f"'{texte}" if texte[:1] in ("=", "+", "-", "@") else texte
+    """Texte d'une cellule CSV : adresses masquées dans la cellule seule (§ 1.6), et jamais lu
+    comme une formule par Excel (apostrophe devant un début de formule, liste OWASP)."""
+    texte = fichiers.masquer_secrets(texte)
+    return f"'{texte}" if texte[:1] in _DEBUTS_DE_FORMULE else texte
 
 
 def _csv(rapport: RapportAudit) -> str:
+    """Le .csv : chaque cellule de texte est masquée et neutralisée seule ; masquer le fichier
+    entier avalerait les « ; » qui suivent une adresse, et décalerait les colonnes."""
     tampon = io.StringIO()
     ecrivain = csv.writer(tampon, delimiter=";", lineterminator="\r\n")
     ecrivain.writerow(_COLONNES_CSV)
@@ -925,13 +1138,15 @@ def _csv(rapport: RapportAudit) -> str:
         elif len(e.lignes) == 1 and e.nature != ECART_VOLUME:
             debut, fin = _texte_heure(e.lignes[0].debut), _texte_heure(e.lignes[0].fin)
         numeros = ", ".join(dict.fromkeys(ligne.n_facture for ligne in e.lignes if ligne.n_facture))
+        textes = (e.nature, e.ecole or "", f"{e.date:%d/%m/%Y}", debut, fin, intitule, _rangs(e.lignes), numeros)
         ecrivain.writerow([
-            e.nature, e.ecole or "", f"{e.date:%d/%m/%Y}", debut, fin, _cellule_sure(intitule), _rangs(e.lignes),
-            _cellule_sure(numeros), "" if e.heures_agenda is None else _h(e.heures_agenda),
-            "" if e.heures_facturees is None else _h(e.heures_facturees), e.dans_brouillon or "",
+            *(_cellule_sure(texte) for texte in textes),
+            "" if e.heures_agenda is None else _h(e.heures_agenda),
+            "" if e.heures_facturees is None else _h(e.heures_facturees),
+            _cellule_sure(e.dans_brouillon or ""),
             _cellule_sure(e.detail),
         ])
-    return fichiers.masquer_secrets(tampon.getvalue())
+    return tampon.getvalue()
 
 
 def _reserver(chemin: Path) -> bool:
