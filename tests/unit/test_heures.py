@@ -1,4 +1,4 @@
-"""Heures facturables et taux horaire (F-13, ADR009, ADR016 ; banque de tests : T-HRS-01 à T-HRS-24).
+"""Heures facturables et taux horaire (F-13, ADR009, ADR016 ; banque de tests : T-HRS-01 à T-HRS-40).
 
 Tests d'acceptation écrits avant l'implémentation : chaque test importe `facturation.heures`
 lui-même, pour que l'absence du module fasse échouer les tests sans bloquer la collecte des
@@ -21,14 +21,22 @@ Lectures retenues là où le contrat se tait (à valider) : le mode est reconnu 
 de la casse ni des espaces autour ; une correspondance sans colonne `Mode heures` vaut `agenda` ;
 une `Valeur` nulle est acceptée (elle n'est pas négative) ; une `Valeur` ou un taux non numérique
 est refusé comme une valeur absente ; les espaces sont retirés autour de chaque segment de la clé
-tarif et autour de chaque cellule de `Tarifs`.
+tarif et autour de chaque cellule de `Tarifs`. 💡 [proposé — à valider] une `Valeur` saisie alors
+que `Mode heures` est vide est ignorée (T-HRS-03) : question ouverte, relevée en revue.
+
+Revue croisée de F-13 (T-HRS-25 à T-HRS-40) : T-HRS-25 à T-HRS-31 décrivent des défauts relevés
+et sont écrits rouges, avant le correctif ; T-HRS-32 à T-HRS-40 couvrent des gardes déjà codées
+que les relecteurs ont trouvées sans test, chacune vérifiée en la cassant (AGENTS.md §5).
 """
 
 from __future__ import annotations
 
 import copy
 import importlib
-from datetime import date, datetime
+import math
+import re
+import unicodedata
+from datetime import date, datetime, time
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -439,3 +447,269 @@ def test_t_hrs_24_heures_et_taux_d_une_correspondance():
     assert (heures_jury, taux_jury) == (7.5, 60.0)
     assert (heures_journee, taux_journee) == (7.0, 45.0)
     assert heures_jury * taux_jury + heures_journee * taux_journee == 765.0
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Revue croisée de F-13 — défauts relevés (rouges avant le correctif)
+# ──────────────────────────────────────────────────────────────────────
+
+ABSENTE = re.compile(r"absente|manquante|manque")
+
+
+def _tarifs_renommes(ancien: str, nouveau: str | None) -> list[dict]:
+    """TARIFS où la colonne `ancien` est renommée `nouveau`, ou retirée si `nouveau` vaut None."""
+    lignes = []
+    for ligne in TARIFS:
+        copie = {}
+        for colonne, valeur in ligne.items():
+            if colonne != ancien:
+                copie[colonne] = valeur
+            elif nouveau is not None:
+                copie[nouveau] = valeur
+        lignes.append(copie)
+    return lignes
+
+
+@pytest.mark.parametrize(
+    ("debut", "fin", "mode", "valeur"),
+    [
+        ("09:00", "09:00", None, None),
+        ("09:00", "09:00", "agenda", None),
+        ("09:00", "09:00", "coefficient", 0.875),
+        ("12:00", "09:00", "agenda", None),
+        ("12:00", "09:00", "coefficient", 0.5),
+    ],
+    ids=["nulle-mode-vide", "nulle-agenda", "nulle-coefficient", "negative-agenda", "negative-coefficient"],
+)
+def test_t_hrs_25_duree_nulle_ou_negative_refusee(debut, fin, mode, valeur):
+    """T-HRS-25 — 💡 [proposé — à valider] une durée d'agenda nulle (événement sans fin ni durée,
+    que F-10 lit comme durant zéro) ou négative n'est pas facturée en silence en `agenda` ni en
+    `coefficient` : ValueError qui nomme la séance et la durée (« ne jamais inventer un volume
+    horaire »). Le `forfait`, qui ne lit pas la durée, n'est pas visé ici."""
+    seance = _seance(debut, fin, intitule="Cours fictif sans fin")
+    assert seance.duree_h <= 0
+    with pytest.raises(ValueError) as erreur:
+        _heures(seance, _correspondance(mode, valeur))
+    message = str(erreur.value).casefold()
+    assert "cours fictif sans fin" in message
+    assert "durée" in message
+
+
+@pytest.mark.parametrize(
+    ("colonne", "remplacee_par"),
+    [
+        ("Classe / Programme", "Classe / Groupe"),  # le nom de la colonne de l'onglet Cours
+        ("École", "Ecole"),
+        ("Taux HT/h", "Taux HT / h"),
+        ("Taux HT/h", None),
+    ],
+    ids=["classe-groupe", "ecole-sans-accent", "taux-mal-nomme", "taux-absent"],
+)
+def test_t_hrs_26_colonne_de_tarifs_absente(colonne, remplacee_par):
+    """T-HRS-26 — une colonne attendue absente de `Tarifs` (ou mal nommée) → ValueError qui nomme
+    la colonne et dit qu'elle manque, au lieu de « clé introuvable » ou de « taux vide » : Adrian
+    chercherait une ligne ou un taux qui existent bel et bien."""
+    with pytest.raises(ValueError) as erreur:
+        _taux(CLE_STATS_M1, _tarifs_renommes(colonne, remplacee_par))
+    message = str(erreur.value)
+    assert colonne in message
+    bas = message.casefold()
+    assert ABSENTE.search(bas)
+    assert "introuvable" not in bas
+    assert "taux vide" not in bas
+
+
+def test_t_hrs_27_en_tete_de_tarifs_decompose():
+    """T-HRS-27 — un en-tête `École` en forme décomposée (NFD, collé depuis le web ou macOS) ne
+    donne pas « clé introuvable » : soit l'en-tête est reconnu et le taux rendu, soit l'erreur dit
+    que la colonne manque."""
+    nfd = unicodedata.normalize("NFD", "École")
+    assert nfd != "École"
+    try:
+        taux = _taux(CLE_STATS_M1, _tarifs_renommes("École", nfd))
+    except ValueError as erreur:
+        message = str(erreur).casefold()
+        assert "introuvable" not in message
+        assert ABSENTE.search(message)
+    else:
+        assert taux == 45.0
+
+
+def test_t_hrs_28_meme_cle_une_ligne_au_taux_vide():
+    """T-HRS-28 — même clé sur deux lignes, l'une au taux 45, l'autre au taux vide → ValueError qui
+    dit qu'il y a 2 lignes, pas seulement « taux vide » (Adrian voit 45 dans le MASTER)."""
+    tarifs = TARIFS + [{**TARIFS[0], "Taux HT/h": None}]
+    with pytest.raises(ValueError) as erreur:
+        _taux(CLE_STATS_M1, tarifs)
+    message = str(erreur.value).casefold()
+    assert "statistiques fictives" in message
+    assert re.search(r"\b(2|deux) lignes", message)
+
+
+def test_t_hrs_29_taux_differents_affiches_distincts():
+    """T-HRS-29 — deux taux qui ne diffèrent que par un bruit de calcul (formule Excel) : le message
+    montre deux valeurs distinctes, pas « (45, 45) »."""
+    tarifs = TARIFS + [{**TARIFS[0], "Taux HT/h": 45.0000001}]
+    with pytest.raises(ValueError) as erreur:
+        _taux(CLE_STATS_M1, tarifs)
+    assert re.search(r"45[.,]0000001", str(erreur.value))
+
+
+@pytest.mark.parametrize("valeur", ["sept heures et demie", time(7, 30)], ids=["texte", "heure"])
+def test_t_hrs_30_message_forfait_non_numerique(valeur):
+    """T-HRS-30 — en `forfait`, le message d'une `Valeur` non numérique donne un exemple d'heures
+    décimales (7,5), pas le coefficient 0,875."""
+    with pytest.raises(ValueError) as erreur:
+        _heures(_seance("09:00", "16:00"), _correspondance("forfait", valeur))
+    message = str(erreur.value)
+    assert "0,875" not in message
+    assert re.search(r"7[,.]5", message)
+
+
+@pytest.mark.parametrize(
+    ("mode", "valeur", "cause"),
+    [
+        ("coefficient", datetime(2026, 9, 7), "date"),  # 7/9 saisi dans Excel devient le 7 septembre
+        ("forfait", time(7, 30), "heure"),  # 7:30 saisi dans Excel devient une heure
+    ],
+    ids=["date", "heure"],
+)
+def test_t_hrs_31_message_valeur_lue_comme_date_ou_heure(mode, valeur, cause):
+    """T-HRS-31 — une `Valeur` qu'Excel a convertie en date ou en heure : le message nomme cette
+    cause, au lieu de « pas comme du texte »."""
+    with pytest.raises(ValueError) as erreur:
+        _heures(_seance("09:00", "17:00"), _correspondance(mode, valeur))
+    message = str(erreur.value).casefold()
+    assert cause in message
+    assert "texte" not in message
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Revue croisée de F-13 — gardes déjà codées, sans test jusqu'ici
+# ──────────────────────────────────────────────────────────────────────
+
+LIGNES_INCOMPLETES = [  # comme T-HRS-23 : des lignes de Tarifs commencées puis laissées
+    {"École": None, "Module / Matière": None, "Classe / Programme": None, "Taux HT/h": None,
+     "Notes": "ligne vide", "Réf. contrat": None},
+    {"École": "ABC", "Module / Matière": None, "Classe / Programme": None, "Taux HT/h": 99,
+     "Notes": "ligne commencée", "Réf. contrat": None},
+    {"École": "ABC", "Module / Matière": "Statistiques fictives", "Classe / Programme": None,
+     "Taux HT/h": 98, "Notes": "", "Réf. contrat": None},
+]
+
+
+def _ligne_projet(taux) -> dict:
+    return {"École": "ABC", "Module / Matière": "Projet fictif", "Classe / Programme": "M1",
+            "Taux HT/h": taux, "Notes": "", "Réf. contrat": ""}
+
+
+@pytest.mark.parametrize("taux", [0, 0.0, -45], ids=["zero", "zero-float", "negatif"])
+def test_t_hrs_32_taux_nul_ou_negatif(taux):
+    """T-HRS-32 — taux nul ou négatif → ValueError qui nomme la clé et le taux : jamais une facture à 0 €."""
+    with pytest.raises(ValueError) as erreur:
+        _taux("ABC|Projet fictif|M1", TARIFS + [_ligne_projet(taux)])
+    message = str(erreur.value).casefold()
+    assert "projet fictif" in message
+    assert "taux" in message
+
+
+def test_t_hrs_33_meme_cle_taux_differents_ou_egaux():
+    """T-HRS-33 — même clé sur deux lignes : des taux différents lèvent une ValueError qui les cite
+    (aucun n'est choisi) ; le même taux, saisi autrement (casse, 45 et 45.0), est accepté."""
+    differents = TARIFS + [{**TARIFS[0], "Taux HT/h": 50}]
+    with pytest.raises(ValueError) as erreur:
+        _taux(CLE_STATS_M1, differents)
+    message = str(erreur.value)
+    assert "45" in message
+    assert "50" in message
+
+    egaux = TARIFS + [{**TARIFS[0], "École": "abc", "Module / Matière": " STATISTIQUES FICTIVES ",
+                       "Classe / Programme": "m1", "Taux HT/h": 45.0}]
+    assert _taux(CLE_STATS_M1, egaux) == 45.0
+
+
+@pytest.mark.parametrize(
+    ("debut", "fin", "mode", "valeur", "attendu"),
+    [
+        ("09:00", "12:00", "forfait", 1.125, 1.13),  # round() donne 1,12
+        ("09:00", "10:30", "coefficient", 0.75, 1.13),  # 1,5 h × 0,75 = 1,125
+        ("09:00", "10:06", "coefficient", 0.95, 1.05),  # 1,1 h × 0,95 = 1,045 ; le calcul en float donne 1,04
+        ("09:00", "12:00", "forfait", 2.675, 2.68),  # round() donne 2,67
+    ],
+)
+def test_t_hrs_34_arrondi_moitie_vers_le_haut(debut, fin, mode, valeur, attendu):
+    """T-HRS-34 — l'arrondi à 2 décimales prend la moitié vers le haut, sur le nombre tel qu'il s'écrit."""
+    assert _heures(_seance(debut, fin), _correspondance(mode, valeur)) == attendu
+
+
+@pytest.mark.parametrize("mode", ["coefficient", "forfait"])
+@pytest.mark.parametrize(
+    "valeur",
+    [True, False, math.nan, math.inf, "0.875", "7,5"],
+    ids=["VRAI", "FAUX", "nan", "inf", "texte-point", "texte-virgule"],
+)
+def test_t_hrs_35_valeur_booleenne_non_finie_ou_texte(mode, valeur):
+    """T-HRS-35 — une `Valeur` VRAI/FAUX, NaN, infinie ou numérique mais saisie en texte → ValueError
+    qui nomme l'intitulé et le mode (VRAI ne vaut ni un coefficient de 1, ni un forfait d'1 h)."""
+    seance = _seance("09:00", "17:00", intitule="Atelier fictif")
+    with pytest.raises(ValueError) as erreur:
+        _heures(seance, _correspondance(mode, valeur))
+    message = str(erreur.value).casefold()
+    assert "atelier fictif" in message
+    assert mode in message
+
+
+@pytest.mark.parametrize(
+    "taux",
+    [True, math.nan, math.inf, "45", "45,5"],
+    ids=["VRAI", "nan", "inf", "texte", "texte-virgule"],
+)
+def test_t_hrs_36_taux_booleen_non_fini_ou_texte(taux):
+    """T-HRS-36 — un taux VRAI, NaN, infini ou numérique mais saisi en texte → ValueError qui nomme
+    la clé (VRAI ne vaut pas 1 €/h)."""
+    with pytest.raises(ValueError) as erreur:
+        _taux("ABC|Projet fictif|M1", TARIFS + [_ligne_projet(taux)])
+    assert "projet fictif" in str(erreur.value).casefold()
+
+
+def test_t_hrs_37_cle_ou_cellule_en_forme_decomposee():
+    """T-HRS-37 — `É` composé (NFC) ou décomposé (NFD) se valent, dans la cellule comme dans la clé."""
+    nfd = unicodedata.normalize("NFD", "Économétrie fictive")
+    assert nfd != "Économétrie fictive"
+    cellule_nfd = [
+        {**ligne, "Module / Matière": nfd} if ligne["Module / Matière"] == "Économétrie fictive" else ligne
+        for ligne in TARIFS
+    ]
+    assert _taux("ABC|Économétrie fictive|M1", cellule_nfd) == 52.5
+    assert _taux(f"ABC|{nfd}|M1") == 52.5
+
+
+@pytest.mark.parametrize("classe", [3, 3.0], ids=["entier", "float"])
+def test_t_hrs_38_classe_saisie_comme_nombre(classe):
+    """T-HRS-38 — une classe saisie comme nombre (3, lu 3 ou 3.0) est trouvée par la clé `…|3`."""
+    tarifs = TARIFS + [{"École": "ABC", "Module / Matière": "Statistiques fictives",
+                        "Classe / Programme": classe, "Taux HT/h": 41, "Notes": "", "Réf. contrat": ""}]
+    assert _taux("ABC|Statistiques fictives|3", tarifs) == 41.0
+
+
+def test_t_hrs_39_seance_non_classee():
+    """T-HRS-39 — aucune correspondance (`None`, séance à classer) → TypeError qui nomme la séance :
+    un créneau à classer n'est jamais facturé par défaut."""
+    seance = _seance(intitule="Cours fictif non classé")
+    with pytest.raises(TypeError) as erreur:
+        _heures(seance, None)
+    assert "Cours fictif non classé" in str(erreur.value)
+
+
+@pytest.mark.parametrize(
+    "cle",
+    ["||", "ABC|Statistiques fictives|", "|Statistiques fictives|M1", "ABC||M1",
+     "ABC|Statistiques fictives", "ABC|Statistiques fictives|M1|extra"],
+    ids=["segments-vides", "classe-vide", "ecole-vide", "module-vide", "deux-segments", "quatre-segments"],
+)
+def test_t_hrs_40_cle_mal_formee_jamais_un_taux_voisin(cle):
+    """T-HRS-40 — une clé mal formée est refusée comme telle, même quand une ligne incomplète de
+    `Tarifs` lui ressemble : `ABC|Statistiques fictives|` ne prend pas le taux 98 de la ligne sans classe."""
+    with pytest.raises(ValueError) as erreur:
+        _taux(cle, LIGNES_INCOMPLETES + TARIFS)
+    assert "mal formée" in str(erreur.value).casefold()
