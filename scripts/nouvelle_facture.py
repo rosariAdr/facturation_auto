@@ -51,13 +51,28 @@ def main():
     profil = config.resoudre_racine(args.data_root, args.profil)
     print(f"Racine de données : {fmt.get_data_root()}")
 
-    spec = charger_spec(args.spec)
+    try:
+        spec = charger_spec(args.spec)
+    except FileNotFoundError:
+        print(f"\n[ERREUR] Spec {args.spec.name} introuvable : {args.spec} — vérifier le chemin.",
+              file=sys.stderr)
+        sys.exit(1)
+    except OSError:
+        cause = (
+            "c'est un dossier, pas un fichier JSON" if args.spec.is_dir()
+            else "lecture refusée (droits d'accès, ou fichier verrouillé par un autre programme)"
+        )
+        print(f"\n[ERREUR] Spec {args.spec.name} illisible : {cause} ({args.spec}).", file=sys.stderr)
+        sys.exit(1)
+    except ValueError as exc:  # pas en UTF-8, JSON illisible, clé manquante, spec mal formée : rien n'est écrit
+        print(f"\n[ERREUR] Spec {args.spec.name} refusée — {exc}", file=sys.stderr)
+        sys.exit(1)
     # Le préfixe du profil ne vaut que pour son entité ; sinon, règle par défaut.
     prefixe = profil.prefixe_facture if profil and profil.entite == spec["entite"] else None
     try:
         generer(spec, dry_run=args.dry_run, prefixe=prefixe)
     except EcritureRefusee as exc:
-        print(f"\nÉcriture refusée — {exc}", file=sys.stderr)
+        print(f"\n[ERREUR] Écriture refusée — {exc}", file=sys.stderr)
         sys.exit(1)
     except PostMortemEnEcart as exc:
         print("\n" + "\n".join(exc.ecarts), file=sys.stderr)
