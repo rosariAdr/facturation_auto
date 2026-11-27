@@ -8,10 +8,17 @@ Lot 0 :
 
 Lot 1 :
     facturation agenda lire --mois AAAA-MM [--profil CHEMIN] [--fichier AGENDA.ics]
+    facturation preparer [--mois AAAA-MM] [--ecoles ABC,ECO] [--fichier AGENDA.ics]   # F-16a
+    facturation apercu [--mois AAAA-MM] [--facture ID|F<n>] [--ouvrir]   # F-16a, lecture seule
     facturation audit [--mois AAAA-MM | --du JJ/MM/AAAA --au JJ/MM/AAAA] [--ecoles ABC,ECO]   # F-19
-    facturation registre [--ecole X] [--mois AAAA-MM] [--echues] [--trous]   # F-25, et ses actions
+    facturation registre [--ecole X] [--mois AAAA-MM] [--echues] [--trous]   # F-25
+    facturation registre initialiser | envoyee | payee | note | manquant …   # F-25, écritures
+Toutes acceptent `--profil CHEMIN`.
 
-Les commandes `preparer`, `emettre` et `classer` arrivent au lot 1.
+`preparer` écrit les brouillons et les aperçus sous `_sorties/<AAAA-MM>/`, `audit` son rapport
+sous `_sorties/audits/` : ni l'une ni l'autre n'écrit dans le MASTER. Les actions de `registre`
+écrivent l'onglet `Factures` du MASTER, après validation (« oui » ou `--oui`), avec sauvegarde et
+verrou. Les commandes `classer` (F-16b) et `emettre` (F-17) arrivent plus tard dans le lot 1.
 
 Répartition (P-0b) : chaque sous-commande vit dans un module de `facturation.commandes` qui
 expose `ajouter(sous)` ; `_COMMANDES` les liste, un par ligne (ajouter en fin de liste), et
