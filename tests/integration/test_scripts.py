@@ -3,6 +3,7 @@
 Banque de tests : T-CLI-01 à T-CLI-11, T-COH-01, T-VER-01 à T-VER-06, T-CFG-02, T-CFG-03.
 T-CLI-03 à 09 et T-VER-03, 04 : mentions légales et échéance (F-24, ADR030).
 T-CLI-10 : facture de plus de 60 séances (F-18).
+T-FAC-02 : aide du script, devenu l'enveloppe de `facturation.facture` (P-0a).
 """
 
 from __future__ import annotations
@@ -444,3 +445,26 @@ def test_t_ver_06_verifier_signale_un_agenda_secret_inutilisable(tmp_path, conte
     assert len(agenda) == 1 and agenda[0].startswith("[ERREUR]"), res.stdout + res.stderr
     assert "agenda.secret" in agenda[0], agenda[0]
     assert res.returncode == 1, res.stdout + res.stderr
+
+
+# ──────────────────────────────────────────────────────────────────────
+# P-0a — facture dans le paquet (T-FAC-02 ; les autres T-FAC sont dans tests/unit/test_facture.py)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_t_fac_02_aide_du_script_enveloppe():
+    """T-FAC-02 — `python scripts/nouvelle_facture.py --help` affiche la première ligne de la documentation du
+    script, inchangée par le passage dans le paquet (« Génère une facture depuis une spec JSON »), et ses options."""
+    import ast
+
+    script = DEPOT / "scripts" / "nouvelle_facture.py"
+    documentation = ast.get_docstring(ast.parse(script.read_text(encoding="utf-8")))
+    assert documentation, "le script n'a plus de documentation : --help n'a plus de description"
+    premiere_ligne = documentation.splitlines()[0]
+    # COLUMNS large : argparse ne replie pas la description, qui se lit d'un seul tenant.
+    res = _lancer("scripts/nouvelle_facture.py", "--help", env_extra={"COLUMNS": "200"})
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert premiere_ligne in res.stdout, res.stdout
+    assert "Génère une facture depuis une spec JSON" in res.stdout, res.stdout
+    for option in ("--data-root", "--profil", "--dry-run"):
+        assert option in res.stdout, option
