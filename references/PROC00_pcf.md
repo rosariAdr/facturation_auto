@@ -165,7 +165,7 @@ Si une cellule diffère : la facture n'est pas finalisée, l'outil affiche l'éc
 
 ## Tests et validation
 
-- La banque de tests (`python -m pytest`) couvre le format, le profil, les scripts et les garde-fous, sur des données fictives. Défauts connus du gabarit : T-FMT-07 (`xfail` strict), à corriger par F-18.
+- La banque de tests (`python -m pytest`) couvre le format, le profil, les scripts et les garde-fous, sur des données fictives. Le défaut du gabarit suivi par T-FMT-07 (formats perdus, mentions en page 2) est corrigé depuis F-18.
 - Prévu (F-18) : rendus PDF de 1, 7, 17 et 40 séances comparés à des images de référence.
 - Prévu (F-17) : rejouer deux fois la même émission ne duplique rien dans `Sessions`.
 - Déjà couvert : une école sans destinataire ou sans adresse bloque l'écriture.

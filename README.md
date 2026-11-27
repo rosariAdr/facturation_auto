@@ -189,7 +189,7 @@ Tous les tests tournent sur des données fictives créées à la volée. Un déf
 | [references/ROADMAP.md](references/ROADMAP.md) | Lots, critères de sortie, fonctionnalités et critères d'acceptation |
 | [references/PROC00_pcf.md](references/PROC00_pcf.md) | Le protocole : aujourd'hui, puis la cible du lot 1 |
 | [references/FORMAT.md](references/FORMAT.md) | Gabarit, mentions, invariants, API du module |
-| [references/MASTER_SCHEMA.md](references/MASTER_SCHEMA.md) | Structure du MASTER, onglets existants et prévus |
+| [references/MASTER_SCHEMA.md](references/MASTER_SCHEMA.md) | Structure du MASTER : onglets et colonnes, ce que l'outil lit et écrit, onglets encore prévus |
 | [references/ONBOARDING.md](references/ONBOARDING.md) | Ajouter une école |
 | [references/GLOSSAIRE.md](references/GLOSSAIRE.md) | Vocabulaire du projet |
 | [references/RECETTE_DOC.md](references/RECETTE_DOC.md) | Vérifier que la documentation suffit, sur un exemple fictif |

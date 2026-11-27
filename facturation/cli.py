@@ -32,7 +32,6 @@ import sys
 
 from facturation import __version__
 from facturation.commandes import agenda, preparer, profil
-from facturation.commandes import agenda, profil
 from facturation.commandes import audit
 from facturation.commandes import registre
 
