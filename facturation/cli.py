@@ -9,6 +9,7 @@ Lot 0 :
 Lot 1 :
     facturation agenda lire --mois AAAA-MM [--profil CHEMIN] [--fichier AGENDA.ics]
     facturation audit [--mois AAAA-MM | --du JJ/MM/AAAA --au JJ/MM/AAAA] [--ecoles ABC,ECO]   # F-19
+    facturation registre [--ecole X] [--mois AAAA-MM] [--echues] [--trous]   # F-25, et ses actions
 
 Les commandes `preparer`, `emettre` et `classer` arrivent au lot 1.
 
@@ -26,12 +27,14 @@ from facturation import __version__
 from facturation.commandes import agenda, preparer, profil
 from facturation.commandes import agenda, profil
 from facturation.commandes import audit
+from facturation.commandes import registre
 
 _COMMANDES = [
     profil,
     agenda,
     preparer,
     audit,
+    registre,
 ]
 
 
