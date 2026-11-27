@@ -58,6 +58,17 @@ Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/). Versions : `0
 ### Retiré
 - Données réelles des documents de référence et de l'exemple par bon de commande, renommé `examples/factures_par_bon_de_commande.py` (données fictives, comportement inchangé). Restent à traiter : `examples/spec_exemple.json`, les tests et deux docstrings, liés entre eux (ticket à part).
 
+### Ajouté (P-0b, socle du lot 1)
+- `facturation/fichiers.py` : écritures atomiques (texte, JSON, classeur), journaux JSON Lines, empreintes, masquage des adresses ; `facturation/chemins.py` : mois, noms d'onglet (Janv… Déc), arborescence des sorties, racine refusée dans un dépôt ; `facturation/sessions.py` : lecture typée de `Sessions` (heures « 9h », école par code ou libellé) ; `facturation/journal.py` : schéma figé des journaux, état de validation, pièces d'émission.
+- `master.py` : onglets de suivi lus sans bloquer, rangs Excel, verrou seul, classeur d'école ouvert, contrôle de fidélité d'un enregistrement (`fidelite_aller_retour`) ; `heures.py` : taux en texte (« 60 €/h »), `ligne_tarif` et `Réf. contrat`, montants exacts ; `regles.py` : une ligne par contrat (Q-B1) ; `profil verifier` signale les onglets de suivi illisibles et les pertes d'un enregistrement.
+- Dépendance `Pillow`, pour que les images (logo) d'un classeur survivent à l'enregistrement.
+
+### Corrigé (revue de P-0b)
+- Une ligne de `Sessions` à une seule heure n'échappe plus à la recherche des doublons ; un n° abandonné saisi en minuscules ou au statut « abandonnee » est reconnu.
+- Un ajout au journal après une écriture interrompue ne le rend plus illisible ; un journal avec BOM se lit ; une sauvegarde n'apparaît sous son nom qu'une fois complète ; le classeur est mis sur disque avant de remplacer l'original.
+- Une racine écrite avec « .. », ou atteinte par un lien, est jugée sur son vrai chemin ; un mois en chiffres non ASCII est refusé.
+- Une pièce d'émission abîmée ne conseille plus de la supprimer ; une clé tarif peut nommer l'école par son libellé ; `arrondi_centime` refuse un `float` ; deux n° de contrat qui ne diffèrent que par la casse sont refusés ; un MASTER refusé par l'outil est une ERREUR de `profil verifier`.
+
 ## [0.2.0.dev0] — lot 0, socle (en cours)
 
 ### Ajouté

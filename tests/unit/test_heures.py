@@ -1,4 +1,4 @@
-"""Heures facturables et taux horaire (F-13, ADR009, ADR016 ; banque de tests : T-HRS-01 à T-HRS-40).
+"""Heures facturables et taux horaire (F-13, ADR009, ADR016 ; banque de tests : T-HRS-01 à T-HRS-51).
 
 Tests d'acceptation écrits avant l'implémentation : chaque test importe `facturation.heures`
 lui-même, pour que l'absence du module fasse échouer les tests sans bloquer la collecte des
@@ -661,12 +661,17 @@ def test_t_hrs_35_valeur_booleenne_non_finie_ou_texte(mode, valeur):
 
 @pytest.mark.parametrize(
     "taux",
-    [True, math.nan, math.inf, "45", "45,5"],
-    ids=["VRAI", "nan", "inf", "texte", "texte-virgule"],
+    [True, math.nan, math.inf, "quarante-cinq", "45 €/jour"],
+    ids=["VRAI", "nan", "inf", "texte", "texte-par-jour"],
 )
 def test_t_hrs_36_taux_booleen_non_fini_ou_texte(taux):
-    """T-HRS-36 — un taux VRAI, NaN, infini ou numérique mais saisi en texte → ValueError qui nomme
-    la clé (VRAI ne vaut pas 1 €/h)."""
+    """T-HRS-36 — un taux VRAI, NaN, infini ou saisi en texte hors des formes reconnues → ValueError
+    qui nomme la clé (VRAI ne vaut pas 1 €/h).
+
+    Révisé par P-0b : le constat du MASTER réel (contrats des vagues 3 à 5, § 15) montre des taux
+    saisis en texte (« 60 €/h ») ; la décision du § 15 fait lire « 45 » et « 45,5 » comme des
+    nombres. Ces deux cas, refusés à l'origine, sont désormais couverts par T-HRS-41 ; ils sont
+    remplacés ici par des textes qui restent refusés."""
     with pytest.raises(ValueError) as erreur:
         _taux("ABC|Projet fictif|M1", TARIFS + [_ligne_projet(taux)])
     assert "projet fictif" in str(erreur.value).casefold()
@@ -713,3 +718,218 @@ def test_t_hrs_40_cle_mal_formee_jamais_un_taux_voisin(cle):
     with pytest.raises(ValueError) as erreur:
         _taux(cle, LIGNES_INCOMPLETES + TARIFS)
     assert "mal formée" in str(erreur.value).casefold()
+
+
+# ══════════════════════════════════════════════════════════════════════
+# P-0b — Socle du lot 1 (banque de tests : T-HRS-41 à T-HRS-49)
+# ══════════════════════════════════════════════════════════════════════
+#
+# Le contrat donnait T-HRS-25 comme point de départ ; T-HRS-25 à T-HRS-40 étant déjà pris (revue
+# de F-13), la suite commence à T-HRS-41. Le test « T-HRS-25 » du contrat (`ligne_tarif` rend
+# `Réf. contrat` ; deux références pour un même taux lèvent `ValueError`) est T-HRS-43 et T-HRS-44.
+#
+# Contrat (contrats des vagues 3 à 5, § 1.2 et 3.6), et décisions du § 15 qui priment :
+# - `ligne_tarif(cle_tarif, tarifs) -> dict` : même recherche et mêmes `ValueError` que
+#   `taux_horaire`, qui s'appuie désormais dessus ; même taux, `Réf. contrat` différentes →
+#   `ValueError` qui cite les références ;
+# - `montant(h, t) = Decimal(repr(h)) * Decimal(repr(t))`, valeur exacte ;
+#   `arrondi_centime` : `ROUND_HALF_UP`, au centime ;
+# - § 15 : `Taux HT/h` est souvent du texte ; sont lus « 60 », « 60 € », « 60 €/h », « 60,5 €/h »,
+#   « 60.50 », espaces (insécables compris) tolérés ; tout autre texte, ou une cellule vide →
+#   `ValueError` qui nomme la clé tarif et la cellule ;
+# - § 15 : la colonne `École` de `Tarifs` porte parfois le libellé de l'école (onglet `Écoles`) ;
+#   un libellé inconnu donne une erreur qui nomme l'onglet, la ligne et la valeur.
+#
+# Lectures retenues (`💡 [proposé — à valider]`) :
+# - « espaces tolérés » vaut aussi autour de « € » et de « / » (« 60 € / h ») ;
+# - un taux en texte nul (« 0 €/h ») reste refusé comme un taux nul ;
+# - la correspondance libellé → code de `Tarifs` passe par un argument nommé facultatif
+#   `ecoles=` (lignes de l'onglet `Écoles`) de `ligne_tarif` et de `taux_horaire` ; sans lui, rien
+#   ne change. Une ligne au libellé inconnu qui porte le module et la classe de la clé lève une
+#   `ValueError` qui cite l'onglet `Tarifs`, la ligne (son module) et la valeur, et renvoie à
+#   l'onglet `Écoles` : le taux n'est ni deviné ni déclaré « introuvable ».
+
+from decimal import Decimal  # noqa: E402
+
+ECOLES = [
+    {"École": "École Fictive A", "Code facturation": "ABC"},
+    {"École": "Institut Fictif B", "Code facturation": "ECO"},
+]
+
+
+@pytest.mark.parametrize(
+    ("saisie", "attendu"),
+    [
+        ("60", 60.0), ("60 €", 60.0), ("60 €/h", 60.0), ("60€/h", 60.0), ("60,5 €/h", 60.5), ("60.50", 60.5),
+        ("60 €/h", 60.0), (" 60,5 €/h ", 60.5), (" 60 € / h ", 60.0), ("45,75", 45.75),
+    ],
+    ids=["entier", "euro", "euro-heure", "sans-espace", "virgule", "point", "insecable", "insecables-fines",
+         "espaces-partout", "deux-decimales"],
+)
+def test_t_hrs_41_taux_saisi_en_texte(saisie, attendu):
+    """T-HRS-41 — décision du § 15 : un taux saisi en texte (« 60 €/h », forme du MASTER réel) se lit
+    comme le nombre qu'il écrit, virgule ou point décimal, espaces insécables compris."""
+    taux = _taux("ABC|Projet fictif|M1", TARIFS + [_ligne_projet(saisie)])
+    assert taux == attendu
+    assert isinstance(taux, float)
+
+
+@pytest.mark.parametrize(
+    "saisie",
+    ["€/h", "à définir", "60 €/jour", "soixante €/h", "60-65 €/h", "60 €/h ou 65 €/h", "0 €/h", None, ""],
+    ids=["sans-chiffre", "a-definir", "par-jour", "en-lettres", "fourchette", "deux-taux", "nul", "None", "vide"],
+)
+def test_t_hrs_42_taux_en_texte_illisible_refuse(saisie):
+    """T-HRS-42 — tout autre texte (sans chiffre, par jour, fourchette, deux taux…), un taux nul ou une
+    cellule vide → `ValueError` qui nomme la clé tarif et la cellule (colonne « Taux HT/h », contenu
+    cité) : ne jamais inventer un taux."""
+    with pytest.raises(ValueError) as erreur:
+        _taux("ABC|Projet fictif|M1", TARIFS + [_ligne_projet(saisie)])
+    message = str(erreur.value)
+    assert "projet fictif" in message.casefold()
+    assert "Taux HT/h" in message
+    if saisie:
+        assert saisie in message
+
+
+def test_t_hrs_43_ligne_tarif_rend_la_ligne_et_sa_reference():
+    """T-HRS-43 — `ligne_tarif` rend la ligne de `Tarifs` désignée par la clé, `Réf. contrat` comprise,
+    avec la même recherche que `taux_horaire` (casse et espaces ignorés) et les mêmes refus."""
+    hrs = _hrs()
+    ligne = hrs.ligne_tarif(" abc | STATISTIQUES FICTIVES | m1 ", TARIFS)
+    assert (ligne["Réf. contrat"], ligne["Taux HT/h"], ligne["Classe / Programme"]) == ("CT-FICTIF-01", 45, "M1")
+    assert hrs.ligne_tarif("ABC|Économétrie fictive|M1", TARIFS)["Réf. contrat"] in (None, "")
+    for cle in ("ABC|Statistiques fictives|M3", "XYZ|Statistiques fictives|M1", "ABC|Statistiques fictives"):
+        with pytest.raises(ValueError) as erreur:
+            hrs.ligne_tarif(cle, TARIFS)
+        with pytest.raises(ValueError) as erreur_taux:
+            hrs.taux_horaire(cle, TARIFS)
+        assert str(erreur.value) == str(erreur_taux.value)
+
+
+def test_t_hrs_44_meme_taux_references_differentes():
+    """T-HRS-44 — même clé sur deux lignes au même taux mais aux `Réf. contrat` différentes :
+    `ValueError` qui cite les deux références (`ligne_tarif`, et `taux_horaire` qui s'appuie
+    dessus) ; même taux et même référence : la ligne est rendue."""
+    hrs = _hrs()
+    doublon = {**TARIFS[0], "Réf. contrat": "CT-FICTIF-09"}
+    for fonction in (hrs.ligne_tarif, hrs.taux_horaire):
+        with pytest.raises(ValueError) as erreur:
+            fonction(CLE_STATS_M1, TARIFS + [doublon])
+        message = str(erreur.value)
+        assert "CT-FICTIF-01" in message and "CT-FICTIF-09" in message
+    meme_reference = {**TARIFS[0], "Notes": "doublon fictif"}
+    assert hrs.ligne_tarif(CLE_STATS_M1, TARIFS + [meme_reference])["Réf. contrat"] == "CT-FICTIF-01"
+    assert hrs.taux_horaire(CLE_STATS_M1, TARIFS + [meme_reference]) == 45.0
+
+
+@pytest.mark.parametrize(
+    ("heures", "taux", "attendu"),
+    [(3.5, 45.0, "157.5"), (1.13, 52.5, "59.325"), (0.1, 0.2, "0.02"), (7.5, 60, "450.0"), (2.25, 41.33, "92.9925")],
+)
+def test_t_hrs_45_montant_exact(heures, taux, attendu):
+    """T-HRS-45 — `montant(h, t)` = `Decimal(repr(h)) * Decimal(repr(t))` : la valeur exacte, sans
+    arrondi ni bruit binaire (0,1 × 0,2 = 0,02 et non 0,020000000000000004)."""
+    resultat = _hrs().montant(heures, taux)
+    assert isinstance(resultat, Decimal)
+    assert resultat == Decimal(attendu)
+    assert resultat == Decimal(repr(heures)) * Decimal(repr(taux))
+
+
+@pytest.mark.parametrize(
+    ("valeur", "attendu"),
+    [("59.325", "59.33"), ("2.675", "2.68"), ("92.9925", "92.99"), ("10", "10.00"), ("157.5", "157.50"),
+     ("0.005", "0.01"), ("1890.004", "1890.00")],
+)
+def test_t_hrs_46_arrondi_centime(valeur, attendu):
+    """T-HRS-46 — `arrondi_centime` : au centime, la moitié vers le haut (59,325 → 59,33, là où
+    l'arrondi bancaire donnerait 59,32), deux décimales écrites."""
+    resultat = _hrs().arrondi_centime(Decimal(valeur))
+    assert isinstance(resultat, Decimal)
+    assert str(resultat) == attendu
+
+
+def test_t_hrs_47_total_arrondi_une_seule_fois():
+    """T-HRS-47 — un total vaut la somme exacte des montants, arrondie une seule fois (§ 1.2) : trois
+    lignes de 1,005 € donnent 3,02 €, pas 3,03 € (somme des lignes arrondies)."""
+    hrs = _hrs()
+    montants = [hrs.montant(0.5, 2.01) for _ in range(3)]
+    assert montants == [Decimal("1.005")] * 3
+    assert hrs.arrondi_centime(sum(montants, Decimal(0))) == Decimal("3.02")
+    assert sum((hrs.arrondi_centime(m) for m in montants), Decimal(0)) == Decimal("3.03")
+
+
+TARIFS_LIBELLES = [
+    {"École": "École Fictive A", "Module / Matière": "Projet fictif", "Classe / Programme": "M1",
+     "Taux HT/h": "55 €/h", "Notes": "", "Réf. contrat": "CT-FICTIF-05"},
+    {"École": "Institut Fictif B", "Module / Matière": "Projet fictif", "Classe / Programme": "M1",
+     "Taux HT/h": 48, "Notes": "", "Réf. contrat": ""},
+]
+
+
+def test_t_hrs_48_ecole_designee_par_son_libelle():
+    """T-HRS-48 — § 15 : la colonne `École` de `Tarifs` peut porter le libellé de l'école ; avec les
+    lignes de l'onglet `Écoles` (`ecoles=`), la clé `ABC|…` trouve la ligne « École Fictive A »,
+    sans la confondre avec celle d'une autre école ; sans `ecoles=`, rien n'est deviné."""
+    hrs = _hrs()
+    tarifs = TARIFS + TARIFS_LIBELLES
+    assert hrs.taux_horaire("ABC|Projet fictif|M1", tarifs, ecoles=ECOLES) == 55.0
+    assert hrs.ligne_tarif("ABC|Projet fictif|M1", tarifs, ecoles=ECOLES)["Réf. contrat"] == "CT-FICTIF-05"
+    assert hrs.taux_horaire("ECO|Projet fictif|M1", tarifs, ecoles=ECOLES) == 48.0
+    assert hrs.taux_horaire(CLE_STATS_M1, tarifs, ecoles=ECOLES) == 45.0
+    with pytest.raises(ValueError, match="introuvable"):
+        hrs.taux_horaire("ABC|Projet fictif|M1", tarifs)
+
+
+def test_t_hrs_49_libelle_inconnu_refuse():
+    """T-HRS-49 — § 15 : une ligne de `Tarifs` dont l'école est un libellé inconnu de `Écoles`, et qui
+    porte le module et la classe de la clé, lève `ValueError` qui cite l'onglet `Tarifs`, la ligne
+    (son module), la valeur et l'onglet `Écoles` : le taux n'est ni deviné ni « introuvable »."""
+    inconnue = {"École": "École Fictive Inconnue", "Module / Matière": "Projet fictif",
+                "Classe / Programme": "M1", "Taux HT/h": 50, "Notes": "", "Réf. contrat": ""}
+    with pytest.raises(ValueError) as erreur:
+        _hrs().taux_horaire("ABC|Projet fictif|M1", TARIFS + [inconnue], ecoles=ECOLES)
+    message = str(erreur.value)
+    for attendu in ("Tarifs", "Projet fictif", "École Fictive Inconnue", "Écoles"):
+        assert attendu in message, attendu
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Revue de P-0b (T-HRS-50, T-HRS-51)
+# ──────────────────────────────────────────────────────────────────────
+#
+# Constats des deux relecteurs, écrits rouges avant le correctif :
+# - T-HRS-50 : avec `ecoles=`, la colonne `École` de `Tarifs` était traduite en code, mais pas le
+#   segment école de la clé : une clé écrite avec le libellé (« École Fictive A|… ») était déclarée
+#   « introuvable » alors qu'une ligne la porte mot pour mot, et elle se trouve sans `ecoles=`. Le
+#   § 15 (« la correspondance d'une école accepte le code ou le libellé ») vaut pour les deux côtés ;
+# - T-HRS-51 : `arrondi_centime` arrondissait un `float` sur sa valeur binaire (2.675 → 2,67 au lieu
+#   de 2,68), sans erreur. Le § 1.2 veut des montants en `Decimal`. Lecture retenue (`💡 [proposé —
+#   à valider]`) : un `float` lève `TypeError`, comme `montant` refuse un type inattendu ; un entier
+#   (la somme d'une liste vide vaut 0) reste accepté.
+
+
+def test_t_hrs_50_cle_qui_nomme_l_ecole_par_son_libelle():
+    """T-HRS-50 — avec `ecoles=`, le segment école de la clé peut aussi porter le libellé de l'école : il
+    trouve la ligne de `Tarifs` écrite avec le libellé comme celle écrite avec le code, sans la
+    confondre avec celle d'une autre école."""
+    hrs = _hrs()
+    tarifs = TARIFS + TARIFS_LIBELLES
+    assert hrs.taux_horaire("École Fictive A|Projet fictif|M1", tarifs) == 55.0  # sans `ecoles=` : mot pour mot
+    assert hrs.taux_horaire("École Fictive A|Projet fictif|M1", tarifs, ecoles=ECOLES) == 55.0
+    assert hrs.taux_horaire("Institut Fictif B|Projet fictif|M1", tarifs, ecoles=ECOLES) == 48.0
+    ligne = hrs.ligne_tarif(" école fictive a |Statistiques fictives|M1", tarifs, ecoles=ECOLES)
+    assert (ligne["École"], ligne["Réf. contrat"]) == ("ABC", "CT-FICTIF-01")
+
+
+@pytest.mark.parametrize("valeur", [2.675, 59.325, 0.1, 157.5])
+def test_t_hrs_51_arrondi_centime_refuse_un_float(valeur):
+    """T-HRS-51 — `arrondi_centime` lève `TypeError` pour un `float` (💡) : un montant arrondi sur la
+    valeur binaire d'un float peut être faux d'un centime sans alerte ; le même nombre en `Decimal`
+    (écrit comme il s'affiche) est arrondi, et un entier reste accepté."""
+    hrs = _hrs()
+    with pytest.raises(TypeError):
+        hrs.arrondi_centime(valeur)
+    attendu = Decimal(repr(valeur)).quantize(Decimal("0.01"), rounding="ROUND_HALF_UP")
+    assert hrs.arrondi_centime(Decimal(repr(valeur))) == attendu
+    assert hrs.arrondi_centime(0) == Decimal("0.00")

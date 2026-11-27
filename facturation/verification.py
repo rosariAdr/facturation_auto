@@ -4,6 +4,13 @@
 problème bloquant (ERREUR) empêcherait de préparer les factures, un point
 d'ATTENTION ne bloque pas encore mais le deviendra à un lot suivant.
 
+Depuis P-0b, la vérification signale aussi en ATTENTION chaque onglet de suivi que l'outil
+n'a pas pu lire (`Master.suivi_invalide`) et chaque perte qu'un enregistrement du MASTER par
+l'outil entraînerait (`master.fidelite_aller_retour`, qui travaille sur une copie temporaire).
+Un MASTER que `lire_master` refuse (colonne obligatoire manquante, fichier illisible…) est une
+ERREUR : toute préparation échouerait (revue de P-0b). Un MASTER qui ne s'ouvre pas parce qu'il
+est ouvert dans Excel ou verrouillé reste une ATTENTION, comme le classeur ouvert.
+
 Rien n'est écrit : la vérification ne fait que lire.
 """
 
@@ -16,7 +23,7 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 
-from facturation import config
+from facturation import config, master
 from facturation import pcf_format as fmt
 from facturation.config import Profil
 
@@ -99,6 +106,7 @@ def _verifier_donnees(profil: Profil) -> list[Constat]:
     if absents_suivi:
         constats.append(Constat(ATTENTION, "MASTER", f"onglets de suivi absents : {', '.join(absents_suivi)}"))
     constats.append(Constat(OK, "MASTER", f"{profil.master.name} lisible, {len(onglets)} onglets"))
+    constats += _verifier_lecture_et_fidelite(profil)
 
     fmt.set_data_root(profil.racine)
     try:
@@ -139,6 +147,31 @@ def _verifier_donnees(profil: Profil) -> list[Constat]:
             ATTENTION, "Coordonnées",
             f"destinataires incomplets (factures bloquées) : {', '.join(partiels)}",
         ))
+    return constats
+
+
+def _verifier_lecture_et_fidelite(profil: Profil) -> list[Constat]:
+    """MASTER refusé par l'outil : une ERREUR. Onglets de suivi illisibles et pertes d'un
+    enregistrement par l'outil : une ATTENTION chacun."""
+    constats: list[Constat] = []
+    try:
+        lu = master.lire_master(profil.master)
+    except master.MasterVerrouille as exc:  # classeur ouvert ou verrouillé : passager
+        constats.append(Constat(ATTENTION, "MASTER", f"lecture par l'outil impossible : {exc}"))
+    except (master.MasterInvalide, OSError) as exc:
+        constats.append(Constat(
+            ERREUR, "MASTER", f"refusé par l'outil, aucune facture ne peut être préparée : {exc}",
+        ))
+    else:
+        for onglet, message in lu.suivi_invalide.items():
+            constats.append(Constat(ATTENTION, "MASTER", f"onglet de suivi « {onglet} » ignoré : {message}"))
+    try:
+        pertes = master.fidelite_aller_retour(profil.master)
+    except (master.MasterInvalide, OSError) as exc:
+        constats.append(Constat(ATTENTION, "MASTER", f"contrôle de fidélité impossible : {exc}"))
+    else:
+        for perte in pertes:
+            constats.append(Constat(ATTENTION, "MASTER", f"un enregistrement par l'outil changerait le classeur : {perte}"))
     return constats
 
 

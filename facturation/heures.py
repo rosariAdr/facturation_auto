@@ -9,12 +9,26 @@ Deux calculs, à partir d'une séance de l'agenda (`agenda.Seance`) et des ligne
   × `Valeur` ; `forfait` → `Valeur`. Le résultat est arrondi à 2 décimales, sans autre
   arrondi (ni à l'heure, ni au quart d'heure) ;
 - `taux_horaire(cle_tarif, tarifs)` lit, dans l'onglet `Tarifs`, le taux HT/h de la ligne
-  désignée par la clé `ÉCOLE|Module|Classe` (colonne `Clé tarif` de `Correspondances`).
+  désignée par la clé `ÉCOLE|Module|Classe` (colonne `Clé tarif` de `Correspondances`) ;
+  `ligne_tarif(cle_tarif, tarifs)` rend la ligne elle-même, `Réf. contrat` comprise (P-0b).
+
+Montants (P-0b, contrats des vagues 3 à 5, § 1.2) : `montant(h, t)` donne la valeur exacte
+`Decimal(repr(h)) * Decimal(repr(t))` ; un total est la somme exacte, arrondie une seule fois au
+centime par `arrondi_centime` (la moitié vers le haut). `💡 [proposé — à valider]`
+`arrondi_centime` refuse un `float` (`TypeError`) : arrondi sur sa valeur binaire, il peut être
+faux d'un centime sans alerte (2,675 → 2,67).
+
+Le `Taux HT/h` du MASTER réel est souvent du texte (« 60 €/h », § 15) : un taux se lit en
+nombre, ou en texte de la forme « 60 », « 60 € », « 60 €/h », « 60,5 €/h » ou « 60.50 »
+(espaces, insécables compris, tolérés, y compris autour de « € » et de « / »). La colonne
+`École` de `Tarifs` porte parfois le libellé de l'école : avec les lignes de l'onglet `Écoles`
+(`ecoles=`), la clé trouve la ligne par le code ou par le libellé, et le segment école de la
+clé peut lui aussi porter le code ou le libellé (revue de P-0b).
 
 Aucune valeur n'est devinée : un mode inconnu, une `Valeur` manquante, une durée d'agenda
 nulle ou négative, une colonne de `Tarifs` absente, une clé tarif introuvable ou un taux
-vide lèvent une `ValueError` qui nomme la cause et dit quoi corriger dans le MASTER ou
-l'agenda (« ne jamais inventer un taux ni un volume horaire », AGENTS.md §7).
+vide ou illisible lèvent une `ValueError` qui nomme la cause et dit quoi corriger dans le
+MASTER ou l'agenda (« ne jamais inventer un taux ni un volume horaire », AGENTS.md §7).
 
 💡 [proposé — à valider] Une durée d'agenda nulle (événement sans fin ni durée, que F-10 lit
 comme durant zéro) ou négative est refusée en `agenda` et en `coefficient` ; le `forfait`, qui
@@ -27,13 +41,15 @@ qu'il reçoit.
 from __future__ import annotations
 
 import math
+import re
 import unicodedata
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import date, time, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
 from facturation.agenda import Seance
+from facturation.sessions import code_ecole
 
 # Modes de la colonne `Mode heures` (MASTER_SCHEMA, onglet `Correspondances`).
 MODE_AGENDA = "agenda"
@@ -53,11 +69,18 @@ _VALEUR_ATTENDUE = {
 # Colonnes de l'onglet `Tarifs` (MASTER_SCHEMA) : les trois segments de la clé, puis le taux.
 COLONNES_CLE_TARIF = ("École", "Module / Matière", "Classe / Programme")
 COLONNE_TAUX = "Taux HT/h"
+COLONNE_CONTRAT = "Réf. contrat"
 ONGLET_TARIFS = "Tarifs"
+ONGLET_ECOLES = "Écoles"
 SEPARATEUR_CLE = "|"
 
-# Arrondi des heures facturables : 2 décimales, au plus proche, la moitié vers le haut.
+# Arrondi des heures facturables et des montants : 2 décimales, la moitié vers le haut.
 _CENTIEME = Decimal("0.01")
+
+# Taux saisi en texte (§ 15) : « 60 », « 60 € », « 60 €/h », « 60,5 €/h », « 60.50 », espaces
+# (insécables compris) tolérés autour du nombre, de « € » et de « / ».
+_TAUX_TEXTE_RE = re.compile(r"(\d+(?:[.,]\d+)?)(?:\s*€(?:\s*/\s*[hH])?)?")
+_FORMES_TAUX = "60, 60 €, 60 €/h, 60,5 €/h ou 60.50"
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -335,9 +358,21 @@ def _verifier_colonnes(cle: str, lignes: list[dict[Any, Any]]) -> None:
     )
 
 
+def _taux_lu(brut: Any) -> float | None:
+    """Taux d'une cellule : un nombre fini, ou un texte d'une forme reconnue (« 60 €/h ») ; sinon None."""
+    nombre = _nombre(brut)
+    if nombre is not None:
+        return nombre
+    if isinstance(brut, str):
+        trouve = _TAUX_TEXTE_RE.fullmatch(brut.strip())
+        if trouve:
+            return float(trouve.group(1).replace(",", "."))
+    return None
+
+
 def _taux_valide(brut: Any) -> float | None:
     """Taux d'une cellule s'il est utilisable (nombre fini strictement positif), sinon None."""
-    taux = _nombre(brut)
+    taux = _taux_lu(brut)
     return taux if taux is not None and taux > 0 else None
 
 
@@ -350,22 +385,66 @@ def _taux_de_la_ligne(cle: str, ligne: Mapping[str, Any]) -> float:
             f"Clé tarif « {cle} » : taux vide ({ou}). Renseignez le taux du contrat dans le "
             "MASTER : aucun taux n'est deviné."
         )
-    taux = _nombre(brut)
+    taux = _taux_lu(brut)
     if taux is None:
         raise ValueError(
             f"Clé tarif « {cle} » : taux {_cellule_lisible(brut)} qui n'est pas un nombre ({ou}). "
-            "Saisissez le taux du contrat comme un nombre : aucun taux n'est deviné."
+            f"Saisissez le taux du contrat comme un nombre, ou sous l'une des formes {_FORMES_TAUX} : "
+            "aucun taux n'est deviné."
         )
     if taux <= 0:
         raise ValueError(
-            f"Clé tarif « {cle} » : taux nul ou négatif ({_affiche(brut)}) ({ou}). Renseignez le "
+            f"Clé tarif « {cle} » : taux nul ou négatif ({_cellule_lisible(brut)}) ({ou}). Renseignez le "
             "taux du contrat, strictement positif : aucun taux n'est deviné."
         )
     return taux
 
 
-def taux_horaire(cle_tarif: str, tarifs: Iterable[Mapping[str, Any]]) -> float:
-    """Taux HT/h de la ligne de `Tarifs` désignée par la clé `ÉCOLE|Module|Classe`.
+def _ligne_correspond(ligne: Mapping[str, Any], cherche: tuple[str, str, str],
+                      ecoles: Sequence[Mapping[str, Any]] | None) -> bool:
+    """La ligne de `Tarifs` porte-t-elle l'école, le module et la classe de la clé ?
+
+    Sans `ecoles`, la colonne `École` se compare au segment de la clé. Avec les lignes de
+    l'onglet `Écoles`, elle peut porter le code ou le libellé de l'école (§ 15), et `cherche[0]`
+    est déjà le code de l'école de la clé.
+
+    Raises:
+        ValueError: avec `ecoles`, ligne au module et à la classe de la clé dont l'école est un
+            libellé inconnu de `Écoles` : le taux n'est ni deviné ni déclaré introuvable.
+    """
+    if tuple(_comparable(_texte(ligne.get(c))) for c in COLONNES_CLE_TARIF[1:]) != cherche[1:]:
+        return False
+    brut = ligne.get(COLONNES_CLE_TARIF[0])
+    if ecoles is None:
+        return _comparable(_texte(brut)) == cherche[0]
+    try:
+        code = code_ecole(brut, ecoles)
+    except ValueError as exc:
+        raise ValueError(
+            f"Onglet {ONGLET_TARIFS}, ligne « {_texte(ligne.get(COLONNES_CLE_TARIF[1]))} » "
+            f"({_texte(ligne.get(COLONNES_CLE_TARIF[2]))}), colonne « {COLONNES_CLE_TARIF[0]} » : {exc}"
+        ) from exc
+    return code is not None and _comparable(code) == cherche[0]
+
+
+def _code_de_la_cle(cle: str, ecole: str, ecoles: Sequence[Mapping[str, Any]]) -> str:
+    """Code de l'école du segment école de la clé, écrit avec le code ou avec le libellé (§ 15).
+
+    Raises:
+        ValueError: libellé inconnu de l'onglet `Écoles` (ou ambigu) ; le message nomme la clé.
+    """
+    try:
+        code = code_ecole(ecole, ecoles)
+    except ValueError as exc:
+        raise ValueError(
+            f"Clé tarif « {cle} », colonne « Clé tarif » de Correspondances : {exc}"
+        ) from exc
+    return code or ecole
+
+
+def ligne_tarif(cle_tarif: str, tarifs: Iterable[Mapping[str, Any]], *,
+                ecoles: Sequence[Mapping[str, Any]] | None = None) -> dict[str, Any]:
+    """Ligne de `Tarifs` désignée par la clé `ÉCOLE|Module|Classe`, `Réf. contrat` comprise.
 
     Chaque segment de la clé est comparé à la colonne correspondante (`École`,
     `Module / Matière`, `Classe / Programme`) sans tenir compte de la casse (accents
@@ -373,35 +452,40 @@ def taux_horaire(cle_tarif: str, tarifs: Iterable[Mapping[str, Any]]) -> float:
     préfixe (`M` ne désigne pas `M1`), ni ligne voisine (autre classe, autre école).
     Les lignes incomplètes et les colonnes en plus sont ignorées ; les en-têtes sont
     lus comme `master.py` les lit (NFC, sans espaces autour), sous leur nom exact.
+    Avec `ecoles` (lignes de l'onglet `Écoles`), la colonne `École` comme le segment école
+    de la clé peuvent porter le code ou le libellé de l'école.
 
-    Plusieurs lignes pour la même clé ne sont acceptées que si elles portent toutes le
-    même taux, valide ; sinon l'erreur dit combien de lignes portent la clé et cite
-    leurs taux, plutôt que de choisir l'un d'eux.
+    Le taux de la ligne est contrôlé (un nombre strictement positif, ou un texte d'une forme
+    reconnue). Plusieurs lignes pour la même clé ne sont acceptées que si elles portent
+    toutes le même taux, valide, et la même `Réf. contrat` ; sinon l'erreur dit combien de
+    lignes portent la clé et cite leurs taux ou leurs références, plutôt que de choisir.
 
     Args:
         cle_tarif: valeur de la colonne `Clé tarif` de `Correspondances`.
         tarifs: lignes de l'onglet `Tarifs`, dictionnaires {en-tête : valeur}.
+        ecoles: lignes de l'onglet `Écoles`, pour lire une école désignée par son libellé.
 
     Returns:
-        Le taux, en float, tel qu'il est saisi (aucun arrondi).
+        Une copie de la ligne (en-têtes normalisés) ; la première, s'il y en a plusieurs.
 
     Raises:
         ValueError: clé absente ou mal formée ; colonne attendue absente de `Tarifs` ;
-            clé introuvable dans `Tarifs` ; taux vide, non numérique, nul ou négatif ;
-            même clé sur plusieurs lignes aux taux différents ou invalides. Le message
-            nomme la clé (ou la colonne absente).
+            clé introuvable dans `Tarifs` ; taux vide, illisible, nul ou négatif ;
+            même clé sur plusieurs lignes aux taux différents ou invalides, ou aux
+            références de contrat différentes ; libellé d'école inconnu, dans `Tarifs` ou dans
+            la clé (avec `ecoles`).
+            Le message nomme la clé (ou la colonne absente).
     """
     segments = _segments_cle(cle_tarif)
     cle = SEPARATEUR_CLE.join(segments)
     cherche = tuple(_comparable(s) for s in segments)
+    if ecoles is not None:
+        cherche = (_comparable(_code_de_la_cle(cle, segments[0], ecoles)), *cherche[1:])
 
     lignes = [_par_en_tete(ligne) for ligne in tarifs]
     if lignes:
         _verifier_colonnes(cle, lignes)
-    retenues = [
-        ligne for ligne in lignes
-        if tuple(_comparable(_texte(ligne.get(c))) for c in COLONNES_CLE_TARIF) == cherche
-    ]
+    retenues = [ligne for ligne in lignes if _ligne_correspond(ligne, cherche, ecoles)]
     if not retenues:
         cause = f"l'onglet {ONGLET_TARIFS} est vide" if not lignes else (
             f"aucune ligne de l'onglet {ONGLET_TARIFS} ne porte cette école, ce module et cette classe"
@@ -412,12 +496,22 @@ def taux_horaire(cle_tarif: str, tarifs: Iterable[Mapping[str, Any]]) -> float:
             "contrat dans le MASTER, ou corrigez la clé dans Correspondances : aucun taux n'est deviné."
         )
     if len(retenues) == 1:
-        return _taux_de_la_ligne(cle, retenues[0])
+        _taux_de_la_ligne(cle, retenues[0])
+        return dict(retenues[0])
 
     bruts = [ligne.get(COLONNE_TAUX) for ligne in retenues]
     taux = [_taux_valide(brut) for brut in bruts]
     if None not in taux and len(set(taux)) == 1:
-        return taux[0]  # type: ignore[return-value]
+        references = [ligne.get(COLONNE_CONTRAT) for ligne in retenues]
+        if len({_comparable(_texte(r)) for r in references}) > 1:
+            raise ValueError(
+                f"Clé tarif « {cle} » : {len(retenues)} lignes de l'onglet {ONGLET_TARIFS} portent cette "
+                f"école, ce module et cette classe, au même taux mais avec des « {COLONNE_CONTRAT} » "
+                f"différentes (dans l'ordre des lignes : {' ; '.join(_cellule_lisible(r) for r in references)}). "
+                "La facture ne peut pas citer son contrat : gardez une seule ligne par école, module et "
+                "classe, avec la référence du contrat signé."
+            )
+        return dict(retenues[0])
     if None in taux:
         nature = "dont au moins une au taux vide, non numérique, nul ou négatif"
     else:
@@ -428,3 +522,61 @@ def taux_horaire(cle_tarif: str, tarifs: Iterable[Mapping[str, Any]]) -> float:
         f"{' ; '.join(_cellule_lisible(brut) for brut in bruts)}). Gardez une seule ligne par "
         "école, module et classe, avec le taux du contrat : aucun taux n'est choisi à votre place."
     )
+
+
+def taux_horaire(cle_tarif: str, tarifs: Iterable[Mapping[str, Any]], *,
+                 ecoles: Sequence[Mapping[str, Any]] | None = None) -> float:
+    """Taux HT/h de la ligne de `Tarifs` désignée par la clé `ÉCOLE|Module|Classe`.
+
+    Même recherche et mêmes refus que `ligne_tarif`, sur laquelle elle s'appuie. Le taux se lit
+    en nombre, ou en texte de la forme « 60 », « 60 € », « 60 €/h », « 60,5 €/h » ou « 60.50 ».
+
+    Returns:
+        Le taux, en float, tel qu'il est saisi (aucun arrondi).
+
+    Raises:
+        ValueError: comme `ligne_tarif`.
+    """
+    ligne = ligne_tarif(cle_tarif, tarifs, ecoles=ecoles)
+    return _taux_lu(ligne.get(COLONNE_TAUX))  # type: ignore[return-value]  # contrôlé par ligne_tarif
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Montants
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _nombre_de_calcul(valeur: Any, nom: str) -> Decimal:
+    if isinstance(valeur, bool) or not isinstance(valeur, (int, float)):
+        raise TypeError(f"{nom} attendu en nombre, reçu {valeur!r}.")
+    if not math.isfinite(valeur):
+        raise ValueError(f"{nom} non fini : {valeur!r}.")
+    return Decimal(repr(valeur))
+
+
+def montant(heures: float, taux: float) -> Decimal:
+    """Montant exact d'une ligne : `Decimal(repr(heures)) * Decimal(repr(taux))`, sans arrondi.
+
+    Raises:
+        TypeError: heures ou taux qui ne sont pas des nombres (un booléen compris).
+        ValueError: heures ou taux non finis.
+    """
+    return _nombre_de_calcul(heures, "Heures") * _nombre_de_calcul(taux, "Taux")
+
+
+def arrondi_centime(valeur: Decimal) -> Decimal:
+    """Arrondi au centime, la moitié vers le haut (59,325 → 59,33), deux décimales écrites.
+
+    Un entier est accepté (la somme d'une liste vide vaut 0).
+
+    Raises:
+        TypeError: `float` (💡 [proposé — à valider] : arrondi sur sa valeur binaire, 2,675
+            donnerait 2,67 sans alerte ; passez par `montant`, ou par `Decimal(repr(x))`),
+            booléen, ou tout autre type.
+    """
+    if isinstance(valeur, bool) or not isinstance(valeur, (Decimal, int)):
+        raise TypeError(
+            f"Montant attendu en Decimal, reçu {type(valeur).__name__} {valeur!r} : un montant ne "
+            "s'arrondit jamais sur la valeur binaire d'un float (calculez-le avec `montant`)."
+        )
+    return Decimal(valeur).quantize(_CENTIEME, rounding=ROUND_HALF_UP)

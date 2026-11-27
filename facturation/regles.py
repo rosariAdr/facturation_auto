@@ -3,7 +3,8 @@
 Lit les lignes de l'onglet `Règles_facturation` du MASTER, sous la forme que rend
 `master.lire_master` (une liste de dictionnaires {en-tête : valeur}), et en tire :
 
-- `regles_par_ecole(lignes)` : une `RegleEcole` par école, indexée par son code ;
+- `regles_par_ecole(lignes)` : une `RegleEcole` par ligne, indexée par le couple (code école,
+  n° de contrat) ; une école peut avoir une ligne par contrat (décision Q-B1, P-0b) ;
 - `periode_a_facturer(regle, annee, mois)` : les dates couvertes par la facture du mois,
   selon le rythme de l'école (`mensuel`, `cycle` ; `fin de module` n'est pas encore pris
   en charge) ;
@@ -15,9 +16,13 @@ Lecture d'une ligne :
 - chaque colonne de MASTER_SCHEMA doit figurer dans la ligne, écrite comme dans le schéma ;
   une colonne en plus est permise, comme dans `lire_master` ;
 - un texte est lu sans les espaces de début et de fin ; une cellule faite d'espaces est vide ;
-- le code école est la clé, sans espaces et en majuscules (`abc` → `ABC`, comme pour la
-  numérotation) ; une école en double, même à la casse près, est refusée, comme une ligne
-  remplie sans code école ;
+- la clé est le couple (code école, n° de contrat) : le code sans espaces et en majuscules
+  (`abc` → `ABC`, comme pour la numérotation), le n° de contrat sans espaces autour ("" quand
+  la cellule est vide). Une école peut avoir plusieurs lignes, une par contrat, à condition
+  que chacune porte un n° de contrat distinct : deux lignes sans n°, une ligne sans n° à côté
+  d'une ligne avec n°, ou le même n° deux fois (à la casse et à la forme Unicode près, comme
+  `heures.ligne_tarif` compare les `Réf. contrat`) sont refusés, comme une ligne remplie sans
+  code école ;
 - `Statut lot` vaut `Lot 1`, `Plus tard` ou `Hors facturation` (la liste de MASTER_SCHEMA),
   sans tenir compte de la casse ni des espaces ; vide, l'école n'est dans aucun lot ;
 - `Rythme`, `Colonne Jour` et `Regroupement` sont lus sans tenir compte de la casse et rangés
@@ -423,8 +428,46 @@ def _une_erreur(erreurs: list[str]) -> str:
     return f"{ONGLET} : {len(erreurs)} erreurs à corriger.\n" + "\n".join(f"- {e}" for e in erreurs)
 
 
-def regles_par_ecole(lignes: Iterable[Mapping[str, Any]]) -> dict[str, RegleEcole]:
-    """Une règle par école, indexée par son code en majuscules.
+def _forme_contrat(contrat: str) -> str:
+    """Forme de comparaison d'un n° de contrat : NFC, sans casse (« CTR-1 » et « ctr-1 » sont le même)."""
+    return unicodedata.normalize("NFC", contrat).casefold()
+
+
+def _doublon(ecole: str, contrat: str, deja: list[str]) -> str | None:
+    """Pourquoi une nouvelle ligne de l'école ne peut pas s'ajouter à celles déjà lues ; None si elle le peut.
+
+    Deux n° de contrat qui ne diffèrent que par la casse ou la forme Unicode désignent le même
+    contrat : une faute de frappe ne fait pas un second contrat (ni un second brouillon).
+    """
+    if not deja:
+        return None
+    if not contrat or "" in deja:
+        numeros = sorted(set(deja + [contrat]) - {""})
+        connus = f" (n° lus : {_liste(numeros)})" if numeros else ""
+        return (
+            f"{ONGLET} : école {ecole} en double, sans « {_CONTRAT} » pour distinguer ses lignes{connus}. "
+            f"Une seule ligne par école, ou une ligne par contrat, chacune avec son « {_CONTRAT} »."
+        )
+    meme = next((lu for lu in deja if _forme_contrat(lu) == _forme_contrat(contrat)), None)
+    if meme is None:
+        return None
+    if meme == contrat:
+        return (
+            f"{ONGLET} : école {ecole} en double, avec le même « {_CONTRAT} » « {contrat} » sur deux "
+            "lignes. Une seule ligne par contrat."
+        )
+    return (
+        f"{ONGLET} : école {ecole} en double, avec le même « {_CONTRAT} » à la casse près sur deux "
+        f"lignes (« {meme} » et « {contrat} »). Une seule ligne par contrat : écrivez son n° une seule "
+        "fois, comme sur le contrat signé."
+    )
+
+
+def regles_par_ecole(lignes: Iterable[Mapping[str, Any]]) -> dict[tuple[str, str], RegleEcole]:
+    """Une règle par ligne, indexée par le couple (code école en majuscules, n° de contrat).
+
+    Le n° de contrat est celui de la colonne `N° de contrat`, sans espaces autour ; il vaut ""
+    quand la cellule est vide. Une école peut avoir une ligne par contrat (décision Q-B1).
 
     Args:
         lignes: lignes de l'onglet `Règles_facturation`, par exemple
@@ -438,14 +481,16 @@ def regles_par_ecole(lignes: Iterable[Mapping[str, Any]]) -> dict[str, RegleEcol
 
     Raises:
         ValueError: colonne de MASTER_SCHEMA absente (aussitôt) ; ligne remplie sans code
-            école, code école mal formé, école en double (même à la casse ou aux espaces près),
-            ou valeur illisible sur la ligne d'une école qui n'est pas hors lot. Un seul
-            message rapporte toutes ces erreurs ; chacune nomme l'école, la colonne et la valeur.
+            école, code école mal formé ; école sur plusieurs lignes (même à la casse ou aux
+            espaces près) sans n° de contrat distinct sur chacune (le n° de contrat se compare
+            sans tenir compte de la casse) ; valeur illisible sur la
+            ligne d'une école qui n'est pas hors lot. Un seul message rapporte toutes ces
+            erreurs ; chacune nomme l'école, la colonne et la valeur.
     """
-    regles: dict[str, RegleEcole] = {}
+    regles: dict[tuple[str, str], RegleEcole] = {}
     erreurs: list[str] = []
     ecartees: list[str] = []
-    contrats: dict[str, str] = {}  # école → n° de contrat de sa première ligne
+    contrats: dict[str, list[str]] = {}  # école → n° de contrat de chacune de ses lignes
     precedente = ""
     for brute in lignes:
         ligne = {unicodedata.normalize("NFC", str(cle)).strip(): valeur for cle, valeur in brute.items()}
@@ -462,19 +507,15 @@ def regles_par_ecole(lignes: Iterable[Mapping[str, Any]]) -> dict[str, RegleEcol
         except ValueError as exc:
             erreurs.append(f"{ONGLET}, colonne « {_ECOLE} » : {exc}")
             continue
-        if ecole in contrats:
-            numeros = sorted({contrats[ecole], _texte(ligne.get(_CONTRAT))} - {""})
-            precision = (
-                f" Plusieurs contrats pour une même école ({_liste(numeros)}) ne sont pas encore "
-                "pris en charge."
-                if len(numeros) > 1 else ""
-            )
-            erreurs.append(f"{ONGLET} : école {ecole} en double. Une seule ligne par école.{precision}")
+        contrat = _texte(ligne.get(_CONTRAT))
+        doublon = _doublon(ecole, contrat, contrats.get(ecole, []))
+        contrats.setdefault(ecole, []).append(contrat)
+        if doublon is not None:
+            erreurs.append(doublon)
             continue
-        contrats[ecole] = _texte(ligne.get(_CONTRAT))
         regle, erreurs_ligne = _lire_regle(ligne, ecole)
         if regle is not None:
-            regles[ecole] = regle
+            regles[(ecole, regle.n_contrat)] = regle
             continue
         statut = _texte(ligne.get(_STATUT))
         if _forme(statut) in {_forme(s) for s in STATUTS_HORS_LOT}:
@@ -562,9 +603,10 @@ def echeance_selon_regle(date_emission: date, delai_paiement: str | None) -> dat
     return echeance
 
 
-def ecoles_du_lot(regles: Mapping[str, RegleEcole] | Iterable[RegleEcole],
+def ecoles_du_lot(regles: Mapping[Any, RegleEcole] | Iterable[RegleEcole],
                   lot: str = LOT_DEFAUT) -> list[str]:
-    """Codes des écoles dont le `Statut lot` vaut `lot`, triés.
+    """Codes des écoles dont le `Statut lot` vaut `lot`, triés, chacun une seule fois (même pour
+    une école à plusieurs contrats).
 
     Le statut est comparé sans tenir compte de la casse ni des espaces ; une école au statut
     vide n'appartient à aucun lot.
